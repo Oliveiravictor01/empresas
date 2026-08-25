@@ -1,0 +1,6 @@
+{
+  "name": "OmniGestão - Painel Multiempresas",
+  "description": "Painel central de gestão financeira, vendas, despesas, estoque, tarefas e integração com Google Drive para administração de múltiplas empresas com visão individual e consolidada, otimizado para mobile.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

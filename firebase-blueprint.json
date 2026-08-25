@@ -1,0 +1,216 @@
+{
+  "entities": {
+    "SystemSetting": {
+      "title": "SystemSetting",
+      "description": "Global system configuration, master status, and metadata",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "master_configured": { "type": "boolean" },
+        "master_email": { "type": "string" },
+        "created_at": { "type": "string" },
+        "updated_at": { "type": "string" }
+      },
+      "required": ["id", "master_configured"]
+    },
+    "UserAccount": {
+      "title": "UserAccount",
+      "description": "System user account with roles and permissions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "password_hash": { "type": "string" },
+        "role": { "type": "string" },
+        "is_master": { "type": "boolean" },
+        "status": { "type": "string" },
+        "company_ids": { "type": "array" },
+        "created_at": { "type": "string" }
+      },
+      "required": ["id", "name", "email", "role", "status"]
+    },
+    "Company": {
+      "title": "Company",
+      "description": "Company profile in the multi-company architecture",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "trade_name": { "type": "string" },
+        "cnpj": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string" },
+        "address": { "type": "string" },
+        "category": { "type": "string" },
+        "color": { "type": "string" },
+        "status": { "type": "string" },
+        "notes": { "type": "string" },
+        "created_at": { "type": "string" }
+      },
+      "required": ["id", "name", "status"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Inventory product or raw material with stock tracking",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "company_id": { "type": "string" },
+        "name": { "type": "string" },
+        "sku": { "type": "string" },
+        "type": { "type": "string" },
+        "category": { "type": "string" },
+        "sale_price": { "type": "number" },
+        "cost_price": { "type": "number" },
+        "unit": { "type": "string" },
+        "track_stock": { "type": "boolean" },
+        "quantity": { "type": "number" },
+        "min_quantity": { "type": "number" },
+        "status": { "type": "string" },
+        "created_at": { "type": "string" }
+      },
+      "required": ["id", "company_id", "name", "sale_price", "cost_price"]
+    },
+    "Sale": {
+      "title": "Sale",
+      "description": "Sales transaction record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "company_id": { "type": "string" },
+        "customer_name": { "type": "string" },
+        "date": { "type": "string" },
+        "total_amount": { "type": "number" },
+        "payment_method": { "type": "string" },
+        "payment_status": { "type": "string" },
+        "status": { "type": "string" },
+        "created_at": { "type": "string" }
+      },
+      "required": ["id", "company_id", "date", "total_amount", "status"]
+    },
+    "Expense": {
+      "title": "Expense",
+      "description": "Business expense or payable outflow",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "company_id": { "type": "string" },
+        "description": { "type": "string" },
+        "amount": { "type": "number" },
+        "category": { "type": "string" },
+        "due_date": { "type": "string" },
+        "status": { "type": "string" },
+        "created_at": { "type": "string" }
+      },
+      "required": ["id", "company_id", "description", "amount", "status"]
+    },
+    "Customer": {
+      "title": "Customer",
+      "description": "Customer registry per company",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "company_id": { "type": "string" },
+        "name": { "type": "string" },
+        "document": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string" },
+        "status": { "type": "string" },
+        "created_at": { "type": "string" }
+      },
+      "required": ["id", "company_id", "name", "status"]
+    },
+    "Supplier": {
+      "title": "Supplier",
+      "description": "Supplier registry",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "company_id": { "type": "string" },
+        "name": { "type": "string" },
+        "document": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string" },
+        "status": { "type": "string" },
+        "created_at": { "type": "string" }
+      },
+      "required": ["id", "company_id", "name", "status"]
+    },
+    "Task": {
+      "title": "Task",
+      "description": "Team task or operations item",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "company_id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "priority": { "type": "string" },
+        "status": { "type": "string" },
+        "due_date": { "type": "string" },
+        "created_at": { "type": "string" }
+      },
+      "required": ["id", "company_id", "title", "status"]
+    },
+    "ActivityLog": {
+      "title": "ActivityLog",
+      "description": "Audit trail log of all system changes",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "user_id": { "type": "string" },
+        "user_name": { "type": "string" },
+        "user_email": { "type": "string" },
+        "company_id": { "type": "string" },
+        "module": { "type": "string" },
+        "action": { "type": "string" },
+        "description": { "type": "string" },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["id", "user_name", "module", "action", "description", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/system_settings/{settingId}": {
+      "schema": "SystemSetting",
+      "description": "Global system configurations and master initial setup status"
+    },
+    "/users/{userId}": {
+      "schema": "UserAccount",
+      "description": "All registered system accounts and permissions"
+    },
+    "/companies/{companyId}": {
+      "schema": "Company",
+      "description": "Enterprise company records"
+    },
+    "/products/{productId}": {
+      "schema": "Product",
+      "description": "Catalog products and stock"
+    },
+    "/sales/{saleId}": {
+      "schema": "Sale",
+      "description": "Sales records"
+    },
+    "/expenses/{expenseId}": {
+      "schema": "Expense",
+      "description": "Expenses records"
+    },
+    "/customers/{customerId}": {
+      "schema": "Customer",
+      "description": "Customers per company"
+    },
+    "/suppliers/{supplierId}": {
+      "schema": "Supplier",
+      "description": "Suppliers per company"
+    },
+    "/tasks/{taskId}": {
+      "schema": "Task",
+      "description": "Operational tasks"
+    },
+    "/activity_logs/{logId}": {
+      "schema": "ActivityLog",
+      "description": "Audit trail activity logs"
+    }
+  }
+}
