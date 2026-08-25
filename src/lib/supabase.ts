@@ -1,6 +1,6 @@
 import { createClient, SupabaseClient, Session, User } from '@supabase/supabase-js';
 import { AppData, SupabaseConfig, loadSupabaseConfig } from './storage';
-import { Company, Sale, Expense, AccountPayable, AccountReceivable, Product, CarWashService, InventoryMovement, Customer, Supplier, Task } from '../types';
+import { Company, Sale, Expense, AccountPayable, AccountReceivable, Product, CarWashService, InventoryMovement, Customer, Supplier, Task, ActivityLog, UserProfile, UserRole } from '../types';
 import { getFullPermissions, getDefaultRolePermissions, getEmptyPermissions } from './permissions';
 
 let cachedClient: SupabaseClient | null = null;
@@ -832,16 +832,187 @@ export async function createSupabasePublicUser(
   }
 }
 
-// Login via Supabase Auth (Aceita e-mail, nome de usuário ou matrícula)
+// Busca perfil, papel e empresas permitidas diretamente no Supabase PostgreSQL
+export async function fetchUserProfileAndCompanies(
+  userId: string,
+  userEmail?: string,
+  config?: SupabaseConfig
+): Promise<{
+  profile: UserProfile | null;
+  companies: Company[];
+  error?: string;
+}> {
+  const client = getSupabaseClient(config);
+  if (!client) {
+    return { profile: null, companies: [], error: 'Supabase não conectado.' };
+  }
+
+  // 1. Busca perfil na tabela public.profiles
+  let rawProfile: any = null;
+  const { data: profById, error: profErr } = await client
+    .from('profiles')
+    .select('*')
+    .eq('id', userId)
+    .maybeSingle();
+
+  if (profById) {
+    rawProfile = profById;
+  } else if (userEmail) {
+    const { data: profByEmail } = await client
+      .from('profiles')
+      .select('*')
+      .eq('email', userEmail.toLowerCase().trim())
+      .maybeSingle();
+    rawProfile = profByEmail;
+  }
+
+  if (profErr) {
+    console.warn('[SUPABASE] Erro ao consultar public.profiles:', profErr.message);
+  }
+
+  if (!rawProfile) {
+    return {
+      profile: null,
+      companies: [],
+      error: 'Perfil de usuário não encontrado na tabela public.profiles.',
+    };
+  }
+
+  // 2. Determina o papel (Role) e status de Master
+  const rawRole = (rawProfile.role || '').toUpperCase();
+  const emailLower = (rawProfile.email || userEmail || '').toLowerCase().trim();
+  const isMaster =
+    rawProfile.is_master === true ||
+    rawRole === 'MASTER' ||
+    rawRole === 'ADMIN' ||
+    emailLower === 'oliveira.victor968@gmail.com';
+
+  let role: UserRole = 'OPERADOR';
+  if (isMaster) {
+    role = 'MASTER';
+  } else if (rawRole === 'GERENTE' || rawRole === 'MANAGER') {
+    role = 'GERENTE';
+  } else {
+    role = 'OPERADOR';
+  }
+
+  // 3. Busca permissões modulares na tabela public.user_permissions
+  let permissions = isMaster ? getFullPermissions() : getDefaultRolePermissions(role);
+  if (!isMaster) {
+    try {
+      const { data: permRows } = await client
+        .from('user_permissions')
+        .select('*')
+        .eq('user_id', rawProfile.id);
+
+      if (permRows && permRows.length > 0) {
+        const reconstructed: any = { ...permissions };
+        permRows.forEach((pr: any) => {
+          if (pr.module) {
+            reconstructed[pr.module] = {
+              can_view: Boolean(pr.can_view),
+              can_create: Boolean(pr.can_create),
+              can_edit: Boolean(pr.can_edit),
+              can_delete: Boolean(pr.can_delete),
+            };
+          }
+        });
+        permissions = reconstructed;
+      }
+    } catch (permErr: any) {
+      console.warn('[SUPABASE] Erro ao ler user_permissions:', permErr.message);
+    }
+  }
+
+  // 4. Busca empresas permitidas
+  let permittedCompanies: Company[] = [];
+  let companyIds: string[] = [];
+
+  if (isMaster) {
+    // MASTER tem acesso a todas as empresas cadastradas no Supabase
+    const { data: allComps, error: compErr } = await client
+      .from('companies')
+      .select('*')
+      .order('name', { ascending: true });
+
+    if (compErr) {
+      console.warn('[SUPABASE] Erro ao consultar companies para Master:', compErr.message);
+    }
+    if (allComps) {
+      permittedCompanies = allComps as Company[];
+      companyIds = ['*'];
+    }
+  } else {
+    // GERENTE e OPERADOR consultam estritamente public.user_companies
+    const { data: userCompLinks, error: linkErr } = await client
+      .from('user_companies')
+      .select('company_id')
+      .eq('user_id', rawProfile.id);
+
+    if (linkErr) {
+      console.warn('[SUPABASE] Erro ao consultar public.user_companies:', linkErr.message);
+    }
+
+    if (userCompLinks && userCompLinks.length > 0) {
+      const linkedIds = userCompLinks.map((uc: any) => uc.company_id);
+      companyIds = linkedIds;
+
+      const { data: matchedComps, error: compsErr } = await client
+        .from('companies')
+        .select('*')
+        .in('id', linkedIds)
+        .order('name', { ascending: true });
+
+      if (compsErr) {
+        console.warn('[SUPABASE] Erro ao buscar empresas vinculadas:', compsErr.message);
+      }
+      if (matchedComps) {
+        permittedCompanies = matchedComps as Company[];
+      }
+    } else {
+      companyIds = [];
+      permittedCompanies = [];
+    }
+  }
+
+  const profile: UserProfile = {
+    id: rawProfile.id,
+    email: rawProfile.email || userEmail || '',
+    name: rawProfile.full_name || rawProfile.username || (userEmail ? userEmail.split('@')[0] : 'Usuário'),
+    username: rawProfile.username || undefined,
+    registration_number: rawProfile.registration_number || undefined,
+    role,
+    is_master: isMaster,
+    status: rawProfile.status || 'active',
+    company_ids: isMaster ? ['*'] : companyIds,
+    permissions,
+    created_at: rawProfile.created_at || new Date().toISOString(),
+    last_login: new Date().toISOString(),
+  };
+
+  return {
+    profile,
+    companies: permittedCompanies,
+  };
+}
+
+export interface SupabaseAuthResult {
+  success: boolean;
+  user?: UserProfile | null;
+  companies?: Company[];
+  session?: Session | null;
+  message: string;
+}
+
+// Login via Supabase Auth (E-mail e Senha)
 export async function signInSupabase(
   identifier: string,
   pass: string,
   config?: SupabaseConfig
-): Promise<{ success: boolean; user?: User | null; session?: Session | null; profile?: any; message: string }> {
-  console.log('[AUTH] Login iniciado para:', identifier);
+): Promise<SupabaseAuthResult> {
   const client = getSupabaseClient(config);
   if (!client) {
-    return { success: false, message: 'Supabase não configurado.' };
+    return { success: false, message: 'Supabase não configurado. Verifique as credenciais.' };
   }
 
   const cleanInput = identifier.trim();
@@ -851,13 +1022,13 @@ export async function signInSupabase(
     candidates.push(cleanInput.toLowerCase());
   } else {
     const cleanUser = cleanInput.toLowerCase().replace(/[^a-z0-9_.-]/g, '');
-    // 1. Tenta buscar no perfil do banco
+    // Tenta resolver e-mail do usuário em public.profiles
     try {
       const { data: matchedProfiles } = await client
         .from('profiles')
-        .select('*')
-        .or(`username.eq.${cleanUser},registration_number.eq.${cleanInput},full_name.ilike.${cleanInput},email.ilike.${cleanUser}@%`)
-        .limit(2);
+        .select('email')
+        .or(`username.eq.${cleanUser},registration_number.eq.${cleanInput},full_name.ilike.${cleanInput}`)
+        .limit(3);
 
       if (matchedProfiles && matchedProfiles.length > 0) {
         for (const p of matchedProfiles) {
@@ -866,25 +1037,25 @@ export async function signInSupabase(
           }
         }
       }
-    } catch {
-      // continua com candidatos padrão
+    } catch (e) {
+      // continua
     }
-
-    // 2. Adiciona candidatos padrão
-    const standardLocal = `${cleanUser}@omnigestao.local`;
-    if (!candidates.includes(standardLocal)) candidates.push(standardLocal);
 
     if (cleanInput.toUpperCase() === 'VICTOR' || cleanInput.toLowerCase() === 'victor') {
       if (!candidates.includes('oliveira.victor968@gmail.com')) {
         candidates.push('oliveira.victor968@gmail.com');
       }
     }
-
-    const standardEmpresa = `${cleanUser}@empresa.com`;
-    if (!candidates.includes(standardEmpresa)) candidates.push(standardEmpresa);
   }
 
-  let lastErrorMessage = 'Usuário ou senha incorretos.';
+  if (candidates.length === 0) {
+    return {
+      success: false,
+      message: 'Por favor, informe seu e-mail cadastrado.',
+    };
+  }
+
+  let lastErrorMessage = 'Credenciais inválidas. Verifique seu e-mail e senha.';
 
   for (const targetEmail of candidates) {
     try {
@@ -894,69 +1065,101 @@ export async function signInSupabase(
       });
 
       if (error) {
-        lastErrorMessage = error.message;
+        lastErrorMessage = error.message === 'Invalid login credentials' 
+          ? 'E-mail ou senha incorretos no Supabase Auth.' 
+          : error.message;
         continue;
       }
 
       if (data && data.user) {
-        console.log('[AUTH] Sessão autenticada:', data.user.id);
-
-        let profile = null;
-        try {
-          const { data: profData } = await client
-            .from('profiles')
-            .select('*')
-            .eq('id', data.user.id)
-            .maybeSingle();
-
-          if (profData) {
-            profile = profData;
-          } else {
-            const { data: profByEmail } = await client
-              .from('profiles')
-              .select('*')
-              .eq('email', targetEmail)
-              .maybeSingle();
-            if (profByEmail) {
-              profile = profByEmail;
-            }
-          }
-        } catch {
-          // segue para fallback do profile
-        }
+        // Autenticado no Supabase Auth -> Carrega Profile e Empresas Permitidas
+        const { profile, companies, error: profileErr } = await fetchUserProfileAndCompanies(
+          data.user.id,
+          targetEmail,
+          config
+        );
 
         if (!profile) {
-          const userMeta = data.user.user_metadata || {};
-          const isInitialMaster =
-            targetEmail === 'oliveira.victor968@gmail.com' ||
-            userMeta.role === 'MASTER' ||
-            userMeta.is_master === true;
+          return {
+            success: false,
+            message: profileErr || 'Perfil não encontrado na tabela public.profiles.',
+          };
+        }
 
-          profile = {
-            id: data.user.id,
-            email: targetEmail,
-            username: userMeta.username || cleanInput,
-            full_name: userMeta.full_name || targetEmail.split('@')[0],
-            role: isInitialMaster ? 'MASTER' : (userMeta.role || 'OPERADOR'),
-            is_master: isInitialMaster || userMeta.is_master === true,
-            status: 'active',
+        if (profile.status === 'inactive') {
+          await client.auth.signOut();
+          return {
+            success: false,
+            message: 'Sua conta está inativa. Solicite reativação ao Administrador Master.',
           };
         }
 
         return {
           success: true,
-          user: data.user,
+          user: profile,
+          companies,
           session: data.session,
-          profile,
-          message: 'Autenticado com sucesso!',
+          message: 'Autenticado com sucesso no Supabase!',
         };
       }
     } catch (err: any) {
-      lastErrorMessage = err.message || 'Erro ao autenticar no Supabase.';
+      lastErrorMessage = err.message || 'Erro de conexão com o Supabase.';
     }
   }
 
   return { success: false, message: lastErrorMessage };
+}
+
+// Recupera a sessão ativa do Supabase Auth e carrega os dados reais do perfil
+export async function getInitialSupabaseSession(
+  config?: SupabaseConfig
+): Promise<{
+  isAuthenticated: boolean;
+  user?: UserProfile | null;
+  companies?: Company[];
+}> {
+  const client = getSupabaseClient(config);
+  if (!client) {
+    return { isAuthenticated: false };
+  }
+
+  try {
+    const { data: sessionData, error } = await client.auth.getSession();
+    if (error || !sessionData?.session?.user) {
+      return { isAuthenticated: false };
+    }
+
+    const { profile, companies } = await fetchUserProfileAndCompanies(
+      sessionData.session.user.id,
+      sessionData.session.user.email || '',
+      config
+    );
+
+    if (!profile || profile.status === 'inactive') {
+      return { isAuthenticated: false };
+    }
+
+    return {
+      isAuthenticated: true,
+      user: profile,
+      companies,
+    };
+  } catch (err) {
+    console.warn('[SUPABASE] Erro ao recuperar sessão inicial:', err);
+    return { isAuthenticated: false };
+  }
+}
+
+// Efetua Logout no Supabase Auth
+export async function signOutSupabase(config?: SupabaseConfig): Promise<void> {
+  const client = getSupabaseClient(config);
+  if (client) {
+    try {
+      await client.auth.signOut();
+    } catch (e) {
+      console.warn('[SUPABASE] Erro no signOut:', e);
+    }
+  }
 }
 
 // Atualiza perfil, papel e permissões de um usuário no Supabase
@@ -1118,18 +1321,6 @@ export function subscribeToSupabaseAuthChanges(
   };
 }
 
-// Logout via Supabase
-export async function signOutSupabase(config?: SupabaseConfig): Promise<void> {
-  const client = getSupabaseClient(config);
-  if (client) {
-    try {
-      await client.auth.signOut();
-    } catch (e) {
-      console.warn('Erro ao deslogar do Supabase:', e);
-    }
-  }
-}
-
 // ==========================================
 // ATOMIC CRUD OPERATIONS WITH SUPABASE
 // ==========================================
@@ -1177,19 +1368,37 @@ export async function syncSaleToSupabase(sale: Sale, config?: SupabaseConfig): P
       customer_name: sale.customer_name,
       product_service: sale.product_service,
       service_id: sale.service_id || null,
+      items: sale.items || [],
       quantity: sale.quantity,
       unit_price: sale.unit_price,
       discount: sale.discount,
       total_amount: sale.total_amount,
+      total: sale.total_amount,
       supplies_cost: sale.supplies_cost || 0,
       gross_margin: sale.gross_margin || 0,
       consumed_items: sale.consumed_items || [],
       payment_method: sale.payment_method,
       status: sale.status,
       date: sale.date,
+      sale_date: sale.date,
       notes: sale.notes,
       auto_stock_deducted: sale.auto_stock_deducted || false,
     });
+
+    if (sale.items && Array.isArray(sale.items) && sale.items.length > 0) {
+      const saleItemsToSync = sale.items.map((it: any) => ({
+        id: it.id || undefined,
+        sale_id: sale.id,
+        product_id: it.product_id || null,
+        description: it.product_name || it.description || 'Item da Venda',
+        quantity: it.quantity || 1,
+        unit_price: it.unit_price || 0,
+        unit_cost: it.unit_cost || 0,
+        discount: it.discount || 0,
+        total: it.total || (it.quantity || 1) * (it.unit_price || 0),
+      }));
+      await client.from('sale_items').upsert(saleItemsToSync);
+    }
   } catch (err) {
     console.warn('Supabase syncSale error:', err);
   }
@@ -1448,3 +1657,27 @@ export async function syncInventoryMovementToSupabase(movement: InventoryMovemen
     console.warn('Supabase syncInventoryMovement error:', err);
   }
 }
+
+export async function syncActivityLogToSupabase(log: ActivityLog, config?: SupabaseConfig): Promise<void> {
+  const client = getSupabaseClient(config);
+  if (!client) return;
+  try {
+    await client.from('activity_logs').upsert({
+      id: log.id,
+      user_id: log.user_id || null,
+      user_name: log.user_name || 'Usuário',
+      user_email: log.user_email || 'usuario@omnigestao.local',
+      company_id: log.company_id || null,
+      module: log.module,
+      entity: log.module,
+      action: log.action,
+      description: log.description,
+      record_id: log.record_id || null,
+      entity_id: log.record_id || null,
+      created_at: log.created_at || new Date().toISOString(),
+    });
+  } catch (err) {
+    console.warn('Supabase syncActivityLog error:', err);
+  }
+}
+

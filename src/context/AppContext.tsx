@@ -52,6 +52,7 @@ import {
   createSupabasePublicUser,
   signInSupabase,
   signOutSupabase,
+  getInitialSupabaseSession,
   syncUserUpdateToSupabase,
   deleteUserFromSupabase,
   syncCompanyToSupabase,
@@ -73,6 +74,7 @@ import {
   syncTaskToSupabase,
   deleteTaskFromSupabase,
   syncInventoryMovementToSupabase,
+  syncActivityLogToSupabase,
 } from '../lib/supabase';
 import {
   checkFirestoreMasterConfigured,
@@ -397,55 +399,50 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     supabaseConfig.anonKey,
   ]);
 
-  // Check Supabase and persistent storage on startup to see if Master is configured and pull initial data
+  // Check Supabase on startup: verify Master status and recover active Supabase Auth session
   useEffect(() => {
     let isMounted = true;
 
-    const performMasterCheck = async () => {
+    const performMasterAndSessionCheck = async () => {
       try {
+        setIsCheckingMaster(true);
         if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
+          // 1. Verifica se existe Master configurado no Supabase
           const supaHasMaster = await checkSupabaseHasMaster(supabaseConfig);
           if (isMounted) {
-            if (supaHasMaster) {
-              setHasMasterConfigured(true);
-              setMasterConfiguredInStorage(true);
-            } else {
-              const localHasMaster = isMasterConfiguredInStorage(data.users);
-              setHasMasterConfigured(localHasMaster);
-              setMasterConfiguredInStorage(localHasMaster);
-            }
+            setHasMasterConfigured(supaHasMaster);
+            setMasterConfiguredInStorage(supaHasMaster);
           }
 
-          // Initial real data pull from Supabase if configured
-          try {
-            const pullRes = await pullDataFromSupabase(supabaseConfig);
-            if (pullRes.success && pullRes.data && isMounted) {
-              setData((prev) => {
-                const merged: AppData = {
-                  ...prev,
-                  ...pullRes.data,
-                  user: prev.user,
-                  isDemoMode: false,
-                };
-                return merged;
-              });
+          // 2. Recupera sessão ativa no Supabase Auth
+          const sessionRes = await getInitialSupabaseSession(supabaseConfig);
+          if (sessionRes.isAuthenticated && sessionRes.user && isMounted) {
+            setUser(sessionRes.user);
+            setIsAuthenticated(true);
+            setData((prev) => ({
+              ...prev,
+              user: sessionRes.user!,
+              companies: sessionRes.companies || [],
+            }));
+            saveAuthSession({ isAuthenticated: true, userId: sessionRes.user.id });
+
+            if (!sessionRes.user.is_master && sessionRes.user.role !== 'MASTER' && sessionRes.companies && sessionRes.companies.length > 0) {
+              setSelectedCompanyId(sessionRes.companies[0].id);
             }
-          } catch (syncErr) {
-            console.warn('Carga inicial de dados Supabase:', syncErr);
+          } else if (isMounted) {
+            setIsAuthenticated(false);
+            clearAuthSession();
           }
         } else {
-          const localHasMaster = isMasterConfiguredInStorage(data.users);
           if (isMounted) {
-            setHasMasterConfigured(localHasMaster);
-            setMasterConfiguredInStorage(localHasMaster);
+            setIsAuthenticated(false);
+            clearAuthSession();
           }
         }
       } catch (err) {
-        console.warn('Verificação de Master no Supabase:', err);
+        console.warn('[SUPABASE] Erro na verificação inicial de autenticação:', err);
         if (isMounted) {
-          const localHasMaster = isMasterConfiguredInStorage(data.users);
-          setHasMasterConfigured(localHasMaster);
-          setMasterConfiguredInStorage(localHasMaster);
+          setIsAuthenticated(false);
         }
       } finally {
         if (isMounted) {
@@ -454,7 +451,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
     };
 
-    performMasterCheck();
+    performMasterAndSessionCheck();
 
     return () => {
       isMounted = false;
@@ -488,8 +485,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         ...prev,
         activityLogs: [newLog, ...(prev.activityLogs || [])].slice(0, 300),
       }));
+      syncActivityLogToSupabase(newLog, supabaseConfig).catch(console.warn);
     },
-    [data.companies, user]
+    [data.companies, user, supabaseConfig]
   );
 
   // Permission check helper
@@ -641,7 +639,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setQuickAction({ isOpen: false });
   };
 
-  // Auth & Roles
+  // Auth & Roles - Estritamente via Supabase Auth + PostgreSQL (public.profiles & public.user_companies)
   const login = async (email: string, pass: string): Promise<{ success: boolean; message?: string }> => {
     if (!email || !pass) {
       return { success: false, message: 'Por favor, informe o e-mail e a senha.' };
@@ -649,140 +647,49 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     const cleanEmail = email.trim().toLowerCase();
 
-    // 1. Check Firestore cloud authentication
-    try {
-      const fsAuth = await authenticateWithFirestore(cleanEmail, pass);
-      if (fsAuth.success && fsAuth.user) {
-        const u = fsAuth.user;
-        const isTargetMaster = u.is_master || u.role === 'MASTER' || u.role === 'admin';
-        const loggedUserProfile: UserProfile = {
-          id: u.id,
-          email: u.email,
-          name: u.name,
-          role: u.role,
-          is_master: isTargetMaster,
-          status: u.status || 'active',
-          company_ids: u.company_ids || (isTargetMaster ? ['*'] : []),
-          permissions: u.permissions || (isTargetMaster ? getFullPermissions() : getDefaultRolePermissions(u.role)),
-          created_at: u.created_at,
-          last_login: new Date().toISOString(),
-        };
-
-        setUser(loggedUserProfile);
-        setIsAuthenticated(true);
-        saveAuthSession({ isAuthenticated: true, userId: loggedUserProfile.id });
-
-        setData((prev) => {
-          const exists = (prev.users || []).some((x) => x.id === u.id || x.email.toLowerCase() === cleanEmail);
-          const newUsers = exists
-            ? (prev.users || []).map((x) => (x.id === u.id ? { ...x, last_login: new Date().toISOString() } : x))
-            : [{ ...u, last_login: new Date().toISOString() }, ...(prev.users || [])];
-          return {
-            ...prev,
-            user: loggedUserProfile,
-            users: newUsers,
-          };
-        });
-
-        logActivity({
-          module: 'Sistema',
-          action: 'login',
-          description: `Login autenticado via Nuvem: ${loggedUserProfile.name} (${loggedUserProfile.email}) [${loggedUserProfile.role}]`,
-        });
-
-        showToast(`Bem-vindo, ${loggedUserProfile.name}!`, 'success');
-        return { success: true };
-      }
-    } catch (err) {
-      console.warn('Firestore direct auth check bypassed:', err);
+    if (!supabaseConfig.connected || !supabaseConfig.url || !supabaseConfig.anonKey) {
+      return { success: false, message: 'Supabase não configurado. Verifique as credenciais.' };
     }
 
-    // 2. Check Supabase Auth if connected
-    if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-      const supaRes = await signInSupabase(cleanEmail, pass, supabaseConfig);
-      if (!supaRes.success) {
-        return { success: false, message: supaRes.message || 'Credenciais inválidas no Supabase.' };
-      }
-
-      // If Supabase returned profile, ensure local user list is up to date
-      if (supaRes.profile) {
-        const p = supaRes.profile;
-        const mappedRole = p.role || 'OPERADOR';
-        const isMaster = p.is_master || mappedRole === 'MASTER';
-        
-        setData((prev) => {
-          const existingIdx = (prev.users || []).findIndex((u) => u.id === p.id || u.email?.toLowerCase() === cleanEmail);
-          const updatedUser: UserAccount = {
-            id: p.id,
-            name: p.full_name || cleanEmail.split('@')[0],
-            email: p.email || cleanEmail,
-            role: mappedRole,
-            is_master: isMaster,
-            status: p.status || 'active',
-            company_ids: isMaster ? ['*'] : [],
-            permissions: isMaster ? getFullPermissions() : getDefaultRolePermissions(mappedRole),
-            created_at: p.created_at || new Date().toISOString(),
-            last_login: new Date().toISOString(),
-          };
-
-          let newUsers = [...(prev.users || [])];
-          if (existingIdx >= 0) {
-            newUsers[existingIdx] = { ...newUsers[existingIdx], ...updatedUser };
-          } else {
-            newUsers.unshift(updatedUser);
-          }
-          return { ...prev, users: newUsers };
-        });
-      }
+    const supaRes = await signInSupabase(cleanEmail, pass, supabaseConfig);
+    if (!supaRes.success || !supaRes.user) {
+      return { success: false, message: supaRes.message || 'Credenciais inválidas no Supabase.' };
     }
 
-    // 3. Locate account in local users list
-    let foundAccount = (data.users || []).find((u) => u.email?.toLowerCase().trim() === cleanEmail);
+    const loggedUser = supaRes.user;
+    const permittedCompanies = supaRes.companies || [];
 
-    if (!foundAccount) {
-      return { success: false, message: 'Usuário não cadastrado. Realize o cadastro ou crie sua conta inicial.' };
-    }
-
-    if (foundAccount.status === 'inactive') {
-      return { success: false, message: 'Sua conta está inativa. Solicite reativação ao Administrador Master.' };
-    }
-
-    const isTargetMaster = foundAccount.role === 'MASTER' || foundAccount.is_master;
-
-    const loggedUserProfile: UserProfile = {
-      id: foundAccount.id,
-      email: foundAccount.email,
-      name: foundAccount.name,
-      role: foundAccount.role,
-      is_master: isTargetMaster,
-      status: foundAccount.status || 'active',
-      company_ids: foundAccount.company_ids || (isTargetMaster ? ['*'] : []),
-      permissions: foundAccount.permissions || (isTargetMaster ? getFullPermissions() : getDefaultRolePermissions(foundAccount.role)),
-      created_at: foundAccount.created_at,
-      last_login: new Date().toISOString(),
-    };
-
-    setUser(loggedUserProfile);
+    setUser(loggedUser);
     setIsAuthenticated(true);
-    saveAuthSession({ isAuthenticated: true, userId: loggedUserProfile.id });
+    saveAuthSession({ isAuthenticated: true, userId: loggedUser.id });
 
-    // Update last_login
     setData((prev) => ({
       ...prev,
-      user: loggedUserProfile,
-      users: (prev.users || []).map((u) => (u.id === foundAccount!.id ? { ...u, last_login: new Date().toISOString() } : u)),
+      user: loggedUser,
+      companies: permittedCompanies,
     }));
+
+    if (loggedUser.is_master || loggedUser.role === 'MASTER') {
+      setActiveTab('overview');
+    } else {
+      if (permittedCompanies.length > 0) {
+        setSelectedCompanyId(permittedCompanies[0].id);
+      } else {
+        setSelectedCompanyId(null);
+      }
+      setActiveTab('company-detail');
+    }
 
     logActivity({
       module: 'Sistema',
       action: 'login',
-      description: `Login autenticado com sucesso: ${loggedUserProfile.name} (${loggedUserProfile.email}) [${loggedUserProfile.role}]`,
+      description: `Login autenticado no Supabase: ${loggedUser.name} (${loggedUser.email}) [${loggedUser.role}]`,
     });
 
-    if (loggedUserProfile.status === 'pending') {
+    if (loggedUser.status === 'pending') {
       showToast('Conta em aprovação. O Administrador Master precisa vincular suas empresas.', 'warning', 6000);
     } else {
-      showToast(`Bem-vindo, ${loggedUserProfile.name}!`, 'success');
+      showToast(`Bem-vindo, ${loggedUser.name}!`, 'success');
     }
 
     return { success: true };
@@ -796,6 +703,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setSearchQuery('');
     setUser(DEFAULT_ADMIN_USER);
     setIsAuthenticated(false);
+    setData((prev) => ({
+      ...prev,
+      companies: [],
+      user: DEFAULT_ADMIN_USER,
+    }));
     showToast('Sessão encerrada com sucesso.', 'info');
   };
 
