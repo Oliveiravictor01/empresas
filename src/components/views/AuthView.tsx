@@ -1,23 +1,15 @@
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
-import { ShieldCheck, User, Lock, ArrowRight, ArrowLeft, Building2, KeyRound, UserCheck, AlertCircle, CheckCircle2, ShieldAlert } from 'lucide-react';
+import { Lock, ArrowRight, ArrowLeft, Building2, KeyRound, AlertCircle, CheckCircle2, Mail, UserPlus, User } from 'lucide-react';
 
 interface AuthViewProps {
   initialMessage?: string | null;
 }
 
-type AuthScreenState = 'login' | 'forgot_password' | 'create_master' | 'register_operator';
+type AuthScreenState = 'login' | 'register' | 'forgot_password';
 
 export const AuthView: React.FC<AuthViewProps> = ({ initialMessage }) => {
-  const {
-    login,
-    setupMasterUser,
-    requestPasswordRecovery,
-    registerPublicUser,
-    hasMasterConfigured,
-    isCheckingMaster,
-    supabaseConfig,
-  } = useApp();
+  const { login, registerPublicUser, requestPasswordRecovery, supabaseConfig } = useApp();
 
   const [screen, setScreen] = useState<AuthScreenState>('login');
   const [successBanner, setSuccessBanner] = useState<string | null>(initialMessage || null);
@@ -25,25 +17,18 @@ export const AuthView: React.FC<AuthViewProps> = ({ initialMessage }) => {
   const [isLoading, setIsLoading] = useState(false);
 
   // Login form state
-  const [loginUser, setLoginUser] = useState('');
-  const [loginPassword, setLoginPassword] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+
+  // Register form state
+  const [registerName, setRegisterName] = useState('');
+  const [registerEmail, setRegisterEmail] = useState('');
+  const [registerPassword, setRegisterPassword] = useState('');
+  const [registerConfirmPassword, setRegisterConfirmPassword] = useState('');
 
   // Forgot password form state
-  const [recoveryIdentifier, setRecoveryIdentifier] = useState('');
+  const [recoveryEmail, setRecoveryEmail] = useState('');
   const [recoverySuccessMessage, setRecoverySuccessMessage] = useState<string | null>(null);
-
-  // Create Master form state
-  const [masterName, setMasterName] = useState('');
-  const [masterUser, setMasterUser] = useState('');
-  const [masterEmail, setMasterEmail] = useState('');
-  const [masterPassword, setMasterPassword] = useState('');
-  const [masterConfirmPassword, setMasterConfirmPassword] = useState('');
-
-  // Register Operator form state
-  const [opName, setOpName] = useState('');
-  const [opEmail, setOpEmail] = useState('');
-  const [opPassword, setOpPassword] = useState('');
-  const [opConfirmPassword, setOpConfirmPassword] = useState('');
 
   // Handlers
   const handleLoginSubmit = async (e: React.FormEvent) => {
@@ -51,24 +36,72 @@ export const AuthView: React.FC<AuthViewProps> = ({ initialMessage }) => {
     setErrorMessage(null);
     setSuccessBanner(null);
 
-    const cleanUser = loginUser.trim();
-    if (!cleanUser) {
-      setErrorMessage('Por favor, informe seu Usuário ou E-mail.');
+    const cleanEmail = email.trim();
+    if (!cleanEmail) {
+      setErrorMessage('Por favor, informe seu e-mail.');
       return;
     }
-    if (!loginPassword) {
-      setErrorMessage('Por favor, digite sua senha de acesso.');
+    if (!password) {
+      setErrorMessage('Por favor, digite sua senha.');
       return;
     }
 
     setIsLoading(true);
     try {
-      const result = await login(cleanUser, loginPassword);
+      const result = await login(cleanEmail, password);
       if (!result.success) {
-        setErrorMessage(result.message || 'Credenciais inválidas. Verifique seu usuário e senha.');
+        setErrorMessage(result.message || 'Credenciais inválidas. Verifique seu e-mail e senha.');
       }
     } catch (err: any) {
       setErrorMessage(err.message || 'Falha ao autenticar.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleRegisterSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMessage(null);
+    setSuccessBanner(null);
+
+    const cleanName = registerName.trim();
+    const cleanEmail = registerEmail.trim().toLowerCase();
+
+    if (!cleanName) {
+      setErrorMessage('Por favor, informe seu nome completo.');
+      return;
+    }
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      setErrorMessage('Por favor, informe um endereço de e-mail válido.');
+      return;
+    }
+    if (!registerPassword || registerPassword.length < 6) {
+      setErrorMessage('A senha deve ter pelo menos 6 caracteres.');
+      return;
+    }
+    if (registerPassword !== registerConfirmPassword) {
+      setErrorMessage('As senhas digitadas não coincidem.');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const result = await registerPublicUser({
+        name: cleanName,
+        email: cleanEmail,
+        password: registerPassword,
+      });
+
+      if (result.success) {
+        setSuccessBanner(result.message || 'Conta criada com sucesso! Você já pode realizar o login.');
+        setEmail(cleanEmail);
+        setPassword(registerPassword);
+        setScreen('login');
+      } else {
+        setErrorMessage(result.message || 'Erro ao criar conta.');
+      }
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Falha ao processar cadastro.');
     } finally {
       setIsLoading(false);
     }
@@ -79,107 +112,22 @@ export const AuthView: React.FC<AuthViewProps> = ({ initialMessage }) => {
     setErrorMessage(null);
     setRecoverySuccessMessage(null);
 
-    const cleanId = recoveryIdentifier.trim();
-    if (!cleanId) {
-      setErrorMessage('Por favor, informe seu Usuário ou E-mail cadastrado.');
+    const cleanEmail = recoveryEmail.trim();
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      setErrorMessage('Por favor, informe um e-mail válido.');
       return;
     }
 
     setIsLoading(true);
     try {
-      const result = await requestPasswordRecovery(cleanId);
+      const result = await requestPasswordRecovery(cleanEmail);
       if (result.success) {
         setRecoverySuccessMessage(result.message);
       } else {
-        setErrorMessage(result.message || 'Usuário não localizado na base de dados.');
+        setErrorMessage(result.message || 'Erro ao solicitar recuperação de senha.');
       }
     } catch (err: any) {
       setErrorMessage(err.message || 'Erro ao processar recuperação.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleCreateMasterSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMessage(null);
-    setSuccessBanner(null);
-
-    if (!masterName.trim()) {
-      setErrorMessage('Por favor, informe o Nome Completo do Administrador.');
-      return;
-    }
-    if (!masterUser.trim()) {
-      setErrorMessage('Por favor, defina um nome de Usuário para o Master.');
-      return;
-    }
-    if (masterPassword.length < 6) {
-      setErrorMessage('A senha deve ter no mínimo 6 caracteres.');
-      return;
-    }
-    if (masterPassword !== masterConfirmPassword) {
-      setErrorMessage('As senhas digitadas não coincidem.');
-      return;
-    }
-
-    setIsLoading(true);
-    try {
-      const result = await setupMasterUser({
-        name: masterName.trim(),
-        username: masterUser.trim(),
-        email: masterEmail.trim() || undefined,
-        password: masterPassword,
-      });
-
-      if (!result.success) {
-        setErrorMessage(result.message || 'Erro ao criar Administrador Master.');
-      }
-    } catch (err: any) {
-      setErrorMessage(err.message || 'Erro ao inicializar Master.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleRegisterOperatorSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMessage(null);
-
-    if (!opName.trim()) {
-      setErrorMessage('Por favor, preencha seu Nome Completo.');
-      return;
-    }
-    if (!opEmail.trim() || !opEmail.includes('@')) {
-      setErrorMessage('Por favor, insira um e-mail válido.');
-      return;
-    }
-    if (opPassword.length < 6) {
-      setErrorMessage('A senha deve conter no mínimo 6 caracteres.');
-      return;
-    }
-    if (opPassword !== opConfirmPassword) {
-      setErrorMessage('As senhas não coincidem.');
-      return;
-    }
-
-    setIsLoading(true);
-    try {
-      const result = await registerPublicUser({
-        name: opName.trim(),
-        email: opEmail.trim(),
-        password: opPassword,
-      });
-
-      if (result.success) {
-        setSuccessBanner('Conta criada com sucesso! Solicite ao Administrador Master a liberação das suas empresas.');
-        setLoginUser(opEmail.trim());
-        setLoginPassword(opPassword);
-        setScreen('login');
-      } else {
-        setErrorMessage(result.message || 'Erro ao cadastrar operador.');
-      }
-    } catch (err: any) {
-      setErrorMessage(err.message || 'Erro inesperado.');
     } finally {
       setIsLoading(false);
     }
@@ -245,19 +193,19 @@ export const AuthView: React.FC<AuthViewProps> = ({ initialMessage }) => {
 
               <form onSubmit={handleLoginSubmit} className="space-y-4">
                 <div>
-                  <label htmlFor="input-login-user" className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1.5">
-                    USUÁRIO
+                  <label htmlFor="input-login-email" className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1.5">
+                    E-MAIL
                   </label>
                   <div className="relative">
-                    <User className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <Mail className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
                     <input
-                      id="input-login-user"
-                      type="text"
+                      id="input-login-email"
+                      type="email"
                       required
-                      autoComplete="username"
-                      placeholder="Digite seu usuário ou e-mail"
-                      value={loginUser}
-                      onChange={(e) => setLoginUser(e.target.value)}
+                      autoComplete="email"
+                      placeholder="seu.email@empresa.com"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
                       className="w-full pl-10 pr-4 py-3 rounded-xl bg-slate-800/90 border border-slate-700 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 text-white text-sm placeholder:text-slate-500 transition-colors"
                     />
                   </div>
@@ -275,8 +223,8 @@ export const AuthView: React.FC<AuthViewProps> = ({ initialMessage }) => {
                       required
                       autoComplete="current-password"
                       placeholder="Digite sua senha"
-                      value={loginPassword}
-                      onChange={(e) => setLoginPassword(e.target.value)}
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
                       className="w-full pl-10 pr-4 py-3 rounded-xl bg-slate-800/90 border border-slate-700 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 text-white text-sm placeholder:text-slate-500 transition-colors"
                     />
                   </div>
@@ -302,7 +250,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ initialMessage }) => {
                     )}
                   </button>
 
-                  <div className="text-center">
+                  <div className="flex items-center justify-between text-xs pt-1">
                     <button
                       id="btn-forgot-password"
                       type="button"
@@ -310,39 +258,160 @@ export const AuthView: React.FC<AuthViewProps> = ({ initialMessage }) => {
                         setErrorMessage(null);
                         setSuccessBanner(null);
                         setRecoverySuccessMessage(null);
-                        setRecoveryIdentifier(loginUser);
+                        setRecoveryEmail(email);
                         setScreen('forgot_password');
                       }}
-                      className="text-xs font-semibold text-slate-400 hover:text-indigo-400 transition-colors uppercase tracking-wider py-1 cursor-pointer"
+                      className="text-slate-400 hover:text-indigo-400 transition-colors uppercase tracking-wider font-semibold py-1 cursor-pointer"
                     >
-                      ESQUECI MINHA SENHA
+                      Esqueci a senha
+                    </button>
+
+                    <button
+                      id="btn-switch-register"
+                      type="button"
+                      onClick={() => {
+                        setErrorMessage(null);
+                        setSuccessBanner(null);
+                        setRegisterEmail(email);
+                        setScreen('register');
+                      }}
+                      className="text-indigo-400 hover:text-indigo-300 font-bold uppercase tracking-wider py-1 cursor-pointer flex items-center gap-1"
+                    >
+                      <UserPlus className="w-3.5 h-3.5" />
+                      <span>Criar Conta</span>
                     </button>
                   </div>
                 </div>
               </form>
-
-              {/* Discrete First Admin Option only if Master is not configured */}
-              {!isCheckingMaster && !hasMasterConfigured && (
-                <div className="mt-6 pt-5 border-t border-slate-800/80 text-center">
-                  <button
-                    id="btn-create-first-master"
-                    type="button"
-                    onClick={() => {
-                      setErrorMessage(null);
-                      setSuccessBanner(null);
-                      setScreen('create_master');
-                    }}
-                    className="text-[11px] font-bold text-indigo-400 hover:text-indigo-300 transition-colors flex items-center justify-center gap-1.5 mx-auto py-1 cursor-pointer"
-                  >
-                    <ShieldCheck className="w-3.5 h-3.5" />
-                    <span>Criar primeiro administrador</span>
-                  </button>
-                </div>
-              )}
             </div>
           )}
 
-          {/* SCREEN 2: RECUPERAR SENHA */}
+          {/* SCREEN 2: CRIAR CONTA (CADASTRO) */}
+          {screen === 'register' && (
+            <div>
+              <div className="mb-5 text-center">
+                <div className="inline-flex items-center justify-center w-10 h-10 rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 mb-2">
+                  <UserPlus className="w-5 h-5" />
+                </div>
+                <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wide">
+                  CRIAR NOVA CONTA
+                </h2>
+                <p className="text-slate-400 text-xs mt-1">
+                  Cadastre-se para acessar o sistema OmniGestão
+                </p>
+              </div>
+
+              <form onSubmit={handleRegisterSubmit} className="space-y-3.5">
+                <div>
+                  <label htmlFor="input-register-name" className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1">
+                    NOME COMPLETO
+                  </label>
+                  <div className="relative">
+                    <User className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input
+                      id="input-register-name"
+                      type="text"
+                      required
+                      placeholder="Ex: Victor Oliveira"
+                      value={registerName}
+                      onChange={(e) => setRegisterName(e.target.value)}
+                      className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-800/90 border border-slate-700 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 text-white text-sm placeholder:text-slate-500 transition-colors"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label htmlFor="input-register-email" className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1">
+                    E-MAIL
+                  </label>
+                  <div className="relative">
+                    <Mail className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input
+                      id="input-register-email"
+                      type="email"
+                      required
+                      placeholder="seu.email@exemplo.com"
+                      value={registerEmail}
+                      onChange={(e) => setRegisterEmail(e.target.value)}
+                      className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-800/90 border border-slate-700 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 text-white text-sm placeholder:text-slate-500 transition-colors"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label htmlFor="input-register-password" className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1">
+                    SENHA (MÍNIMO 6 DÍGITOS)
+                  </label>
+                  <div className="relative">
+                    <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input
+                      id="input-register-password"
+                      type="password"
+                      required
+                      placeholder="Crie sua senha segura"
+                      value={registerPassword}
+                      onChange={(e) => setRegisterPassword(e.target.value)}
+                      className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-800/90 border border-slate-700 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 text-white text-sm placeholder:text-slate-500 transition-colors"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label htmlFor="input-register-confirm" className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1">
+                    CONFIRMAR SENHA
+                  </label>
+                  <div className="relative">
+                    <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input
+                      id="input-register-confirm"
+                      type="password"
+                      required
+                      placeholder="Repita sua senha"
+                      value={registerConfirmPassword}
+                      onChange={(e) => setRegisterConfirmPassword(e.target.value)}
+                      className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-800/90 border border-slate-700 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 text-white text-sm placeholder:text-slate-500 transition-colors"
+                    />
+                  </div>
+                </div>
+
+                <div className="pt-2 space-y-2.5">
+                  <button
+                    id="btn-register-submit"
+                    type="submit"
+                    disabled={isLoading}
+                    className="w-full py-3 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm shadow-lg shadow-indigo-600/30 transition-all flex items-center justify-center gap-2 group disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer uppercase tracking-wider"
+                  >
+                    {isLoading ? (
+                      <>
+                        <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                        <span>Cadastrando...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span>FINALIZAR CADASTRO</span>
+                        <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    id="btn-register-back"
+                    type="button"
+                    onClick={() => {
+                      setErrorMessage(null);
+                      setScreen('login');
+                    }}
+                    className="w-full py-2.5 px-4 rounded-xl bg-slate-800/80 hover:bg-slate-800 text-slate-300 font-bold text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    <ArrowLeft className="w-3.5 h-3.5" />
+                    <span>Já tenho uma conta (Fazer Login)</span>
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
+
+          {/* SCREEN 3: RECUPERAR SENHA */}
           {screen === 'forgot_password' && (
             <div>
               <div className="mb-5 text-center">
@@ -353,7 +422,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ initialMessage }) => {
                   RECUPERAR SENHA
                 </h2>
                 <p className="text-slate-400 text-xs mt-1">
-                  Informe seu usuário ou e-mail para recuperar o acesso
+                  Informe seu e-mail cadastrado para receber o link de recuperação
                 </p>
               </div>
 
@@ -362,7 +431,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ initialMessage }) => {
                   <div className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs">
                     <div className="flex items-center gap-2 font-bold text-emerald-200 mb-1">
                       <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                      <span>Solicitação Registrada</span>
+                      <span>E-mail Enviado</span>
                     </div>
                     <p className="leading-relaxed">{recoverySuccessMessage}</p>
                   </div>
@@ -384,18 +453,18 @@ export const AuthView: React.FC<AuthViewProps> = ({ initialMessage }) => {
               ) : (
                 <form onSubmit={handleRecoverySubmit} className="space-y-4">
                   <div>
-                    <label htmlFor="input-recover-user" className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1.5">
-                      USUÁRIO OU E-MAIL DE RECUPERAÇÃO
+                    <label htmlFor="input-recover-email" className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1.5">
+                      E-MAIL CADASTRADO
                     </label>
                     <div className="relative">
-                      <User className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                      <Mail className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
                       <input
-                        id="input-recover-user"
-                        type="text"
+                        id="input-recover-email"
+                        type="email"
                         required
-                        placeholder="Digite seu usuário ou e-mail cadastrado"
-                        value={recoveryIdentifier}
-                        onChange={(e) => setRecoveryIdentifier(e.target.value)}
+                        placeholder="seu.email@empresa.com"
+                        value={recoveryEmail}
+                        onChange={(e) => setRecoveryEmail(e.target.value)}
                         className="w-full pl-10 pr-4 py-3 rounded-xl bg-slate-800/90 border border-slate-700 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 text-white text-sm placeholder:text-slate-500 transition-colors"
                       />
                     </div>
@@ -411,11 +480,11 @@ export const AuthView: React.FC<AuthViewProps> = ({ initialMessage }) => {
                       {isLoading ? (
                         <>
                           <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                          <span>Localizando Usuário...</span>
+                          <span>Enviando link...</span>
                         </>
                       ) : (
                         <>
-                          <span>CONTINUAR</span>
+                          <span>ENVIAR LINK DE RECUPERAÇÃO</span>
                           <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
                         </>
                       )}
@@ -437,135 +506,6 @@ export const AuthView: React.FC<AuthViewProps> = ({ initialMessage }) => {
                   </div>
                 </form>
               )}
-            </div>
-          )}
-
-          {/* SCREEN 3: CRIAR ADMINISTRADOR MASTER */}
-          {screen === 'create_master' && (
-            <div>
-              <div className="mb-5 text-center">
-                <div className="inline-flex items-center justify-center w-10 h-10 rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 mb-2">
-                  <ShieldCheck className="w-5 h-5" />
-                </div>
-                <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wide">
-                  CRIAR ADMINISTRADOR MASTER
-                </h2>
-                <p className="text-slate-400 text-xs mt-1">
-                  Configure o primeiro administrador com acesso total ao sistema
-                </p>
-              </div>
-
-              <form onSubmit={handleCreateMasterSubmit} className="space-y-3.5">
-                <div>
-                  <label htmlFor="input-master-name" className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1">
-                    Nome Completo
-                  </label>
-                  <input
-                    id="input-master-name"
-                    type="text"
-                    required
-                    placeholder="Ex: Victor Oliveira"
-                    value={masterName}
-                    onChange={(e) => setMasterName(e.target.value)}
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-800/90 border border-slate-700 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 text-white text-sm placeholder:text-slate-500 transition-colors"
-                  />
-                </div>
-
-                <div>
-                  <label htmlFor="input-master-user" className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1">
-                    Usuário
-                  </label>
-                  <input
-                    id="input-master-user"
-                    type="text"
-                    required
-                    placeholder="Ex: VICTOR"
-                    value={masterUser}
-                    onChange={(e) => setMasterUser(e.target.value)}
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-800/90 border border-slate-700 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 text-white text-sm placeholder:text-slate-500 transition-colors"
-                  />
-                </div>
-
-                <div>
-                  <label htmlFor="input-master-email" className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1">
-                    E-mail (Opcional)
-                  </label>
-                  <input
-                    id="input-master-email"
-                    type="email"
-                    placeholder="seu.email@empresa.com"
-                    value={masterEmail}
-                    onChange={(e) => setMasterEmail(e.target.value)}
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-800/90 border border-slate-700 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 text-white text-sm placeholder:text-slate-500 transition-colors"
-                  />
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label htmlFor="input-master-password" className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1">
-                      Senha
-                    </label>
-                    <input
-                      id="input-master-password"
-                      type="password"
-                      required
-                      placeholder="Mínimo 6 dígitos"
-                      value={masterPassword}
-                      onChange={(e) => setMasterPassword(e.target.value)}
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-slate-800/90 border border-slate-700 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 text-white text-sm placeholder:text-slate-500 transition-colors"
-                    />
-                  </div>
-
-                  <div>
-                    <label htmlFor="input-master-confirm" className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1">
-                      Confirmar Senha
-                    </label>
-                    <input
-                      id="input-master-confirm"
-                      type="password"
-                      required
-                      placeholder="Repita a senha"
-                      value={masterConfirmPassword}
-                      onChange={(e) => setMasterConfirmPassword(e.target.value)}
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-slate-800/90 border border-slate-700 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 text-white text-sm placeholder:text-slate-500 transition-colors"
-                    />
-                  </div>
-                </div>
-
-                <div className="pt-2 space-y-2.5">
-                  <button
-                    id="btn-create-master-submit"
-                    type="submit"
-                    disabled={isLoading}
-                    className="w-full py-3.5 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm shadow-lg shadow-indigo-600/30 transition-all flex items-center justify-center gap-2 group disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer uppercase tracking-wider"
-                  >
-                    {isLoading ? (
-                      <>
-                        <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                        <span>Configurando Master...</span>
-                      </>
-                    ) : (
-                      <>
-                        <span>CRIAR MASTER</span>
-                        <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-                      </>
-                    )}
-                  </button>
-
-                  <button
-                    id="btn-master-back"
-                    type="button"
-                    onClick={() => {
-                      setErrorMessage(null);
-                      setScreen('login');
-                    }}
-                    className="w-full py-2.5 px-4 rounded-xl bg-slate-800/80 hover:bg-slate-800 text-slate-300 font-bold text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer"
-                  >
-                    <ArrowLeft className="w-3.5 h-3.5" />
-                    <span>Voltar para o Login</span>
-                  </button>
-                </div>
-              </form>
             </div>
           )}
         </div>

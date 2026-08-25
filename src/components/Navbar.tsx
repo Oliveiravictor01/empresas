@@ -252,29 +252,6 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenLogin }) => {
               <span className="sm:hidden">Lançar</span>
             </button>
 
-            {/* Demo Data / Clear Indicator Pill (Master only) */}
-            {isMasterUser && (
-              data.isDemoMode ? (
-                <button
-                  onClick={resetAllData}
-                  title="Você está usando dados de demonstração. Clique para limpar."
-                  className="hidden lg:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-900/60 text-[11px] font-semibold hover:bg-amber-100 transition-colors"
-                >
-                  <RotateCcw className="w-3 h-3" />
-                  <span>Modo Demo (Limpar)</span>
-                </button>
-              ) : (
-                <button
-                  onClick={loadDemoData}
-                  title="Carregar dados de exemplo para testar as 8 empresas"
-                  className="hidden lg:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:text-indigo-600 text-[11px] font-semibold transition-colors"
-                >
-                  <Sparkles className="w-3 h-3 text-amber-500" />
-                  <span>Demo</span>
-                </button>
-              )
-            )}
-
             {/* User Profile & Role Indicator */}
             <div className="relative">
               <button

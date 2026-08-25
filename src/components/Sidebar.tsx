@@ -130,8 +130,8 @@ export const Sidebar: React.FC = () => {
         },
         {
           id: 'users',
-          label: 'Usuários & Permissões',
-          icon: UserCheck,
+          label: 'Usuários',
+          icon: Users,
           badge: users.length > 0 ? users.length : undefined,
           badgeColor: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300',
         },

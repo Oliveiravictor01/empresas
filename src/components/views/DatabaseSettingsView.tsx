@@ -633,36 +633,6 @@ npm run android:build
               </ul>
             </div>
           </div>
-
-          {/* Demo Data Actions */}
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-5 shadow-xs space-y-3">
-            <h3 className="font-bold text-xs uppercase tracking-wider text-slate-900 dark:text-white flex items-center gap-2">
-              <Sparkles className="w-4 h-4 text-amber-500" />
-              Ambiente de Demonstração
-            </h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400">
-              Alterne entre seus dados reais e dados de demonstração para testar relatórios e métricas.
-            </p>
-
-            <button
-              onClick={loadDemoData}
-              className="w-full py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs shadow-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-            >
-              <Sparkles className="w-3.5 h-3.5" />
-              <span>Carregar 8 Empresas Demo</span>
-            </button>
-
-            <button
-              onClick={() => {
-                if (confirm('Tem certeza que deseja zerar os dados locais para cadastrar tudo do zero?')) {
-                  resetData();
-                }
-              }}
-              className="w-full py-2.5 rounded-xl border border-rose-200 dark:border-rose-900 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950 text-xs font-semibold transition-colors cursor-pointer"
-            >
-              Limpar Banco de Dados
-            </button>
-          </div>
         </div>
       </div>
     </div>

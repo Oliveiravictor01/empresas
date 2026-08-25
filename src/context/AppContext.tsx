@@ -1,3 +1,7 @@
+// AppContext.tsx - versão de produção
+// Autenticação e dados oficiais via Supabase.
+// Não utilizar dados mock/demo como fonte de dados do aplicativo.
+
 import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode, useCallback } from 'react';
 import {
   UserProfile,
@@ -788,41 +792,21 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  const requestPasswordRecovery = async (identifier: string): Promise<{ success: boolean; message: string }> => {
+  const requestPasswordRecovery = async (email: string): Promise<{ success: boolean; message: string }> => {
     try {
-      const cleanId = identifier.trim();
-      if (!cleanId) {
-        return { success: false, message: 'Por favor, informe seu Usuário ou E-mail cadastrado.' };
+      const cleanEmail = email.trim().toLowerCase();
+      if (!cleanEmail || !cleanEmail.includes('@')) {
+        return { success: false, message: 'Por favor, informe um e-mail válido cadastrado.' };
       }
 
       if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-        const supaRes = await requestPasswordReset(cleanId, supabaseConfig);
+        const supaRes = await requestPasswordReset(cleanEmail, supabaseConfig);
         return supaRes;
-      }
-
-      // Check in local users list
-      const found = (data.users || []).find(
-        (u) =>
-          u.email?.toLowerCase().trim() === cleanId.toLowerCase() ||
-          u.name?.toLowerCase().trim() === cleanId.toLowerCase() ||
-          (u as any).username?.toLowerCase().trim() === cleanId.toLowerCase()
-      );
-
-      if (found) {
-        logActivity({
-          module: 'Segurança',
-          action: 'status_change',
-          description: `Solicitação de recuperação de senha iniciada para o usuário "${found.name}" (${found.email})`,
-        });
-        return {
-          success: true,
-          message: `Solicitação de recuperação identificada para "${found.name}". O Administrador Master pode autorizar ou redefinir sua senha diretamente pelo painel de Usuários.`,
-        };
       }
 
       return {
         success: false,
-        message: 'Usuário ou e-mail não localizado na base de dados.',
+        message: 'Serviço de autenticação Supabase não está conectado.',
       };
     } catch (err: any) {
       return { success: false, message: err.message || 'Erro ao processar solicitação de recuperação.' };

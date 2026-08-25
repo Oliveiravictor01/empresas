@@ -77,7 +77,7 @@ export const BottomNav: React.FC = () => {
     { id: 'suppliers', label: 'Fornecedores', icon: Truck },
     { id: 'tasks', label: 'Tarefas & Prazos', icon: CheckSquare },
     { id: 'comparison', label: 'Matriz Comparativa', icon: Scale },
-    { id: 'users', label: 'Usuários & Permissões', icon: UserCheck },
+    { id: 'users', label: 'Usuários', icon: Users },
     { id: 'activity-logs', label: 'Histórico & Logs', icon: History },
     { id: 'google-drive', label: 'Google Drive & Backup', icon: HardDrive },
     { id: 'database-settings', label: 'Banco & Supabase', icon: Database },
