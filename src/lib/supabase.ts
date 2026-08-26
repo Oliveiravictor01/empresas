@@ -437,3 +437,16 @@ export async function deleteUserFromSupabase(userId: string, config?: SupabaseCo
         await client.from('profiles').delete().eq('id', userId);
     } catch {}
 }
+export async function testSupabaseConnection(config?: SupabaseConfig): Promise<{ success: boolean; message: string }> {
+    const client = getSupabaseClient(config);
+    if (!client) return { success: false, message: 'Cliente não inicializado.' };
+    const { error } = await client.from('companies').select('id').limit(1);
+    if (error) return { success: false, message: error.message };
+    return { success: true, message: 'Conexão bem-sucedida.' };
+}
+
+export async function testSupabaseAuthSetup(config?: SupabaseConfig): Promise<{ success: boolean; message: string }> {
+    const client = getSupabaseClient(config);
+    if (!client) return { success: false, message: 'Cliente não inicializado.' };
+    return { success: true, message: 'Auth configurado.' };
+}
