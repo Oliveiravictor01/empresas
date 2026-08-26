@@ -16,6 +16,23 @@ export function normalizeSupabaseUrl(url: string): string {
     return cleaned;
 }
 
+function isNewSupabaseApiKey(key: string): boolean {
+    return key.startsWith('sb_publishable_') || key.startsWith('sb_secret_');
+}
+
+function supabaseFetch(apiKey: string): typeof fetch {
+    return async (input, init) => {
+        const headers = new Headers(init?.headers);
+        headers.set('apikey', apiKey);
+        const authorization = headers.get('Authorization');
+        const bearer = authorization?.replace(/^Bearer\s+/i, '') || '';
+        if (bearer && isNewSupabaseApiKey(bearer)) {
+            headers.delete('Authorization');
+        }
+        return fetch(input, { ...init, headers });
+    };
+}
+
 export function getSupabaseClient(config?: SupabaseConfig): SupabaseClient | null {
     const envUrl = (import.meta.env.VITE_SUPABASE_URL || '').trim();
     const envKey = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
@@ -39,6 +56,9 @@ export function getSupabaseClient(config?: SupabaseConfig): SupabaseClient | nul
             autoRefreshToken: true,
             detectSessionInUrl: true,
         },
+        global: isNewSupabaseApiKey(key)
+            ? { fetch: supabaseFetch(key) }
+            : undefined,
     });
 
     lastUrl = url;
