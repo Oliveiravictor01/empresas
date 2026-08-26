@@ -422,3 +422,18 @@ export async function createSupabaseMaster(): Promise<{ success: boolean; messag
 export async function createSupabasePublicUser(): Promise<{ success: boolean; message: string }> {
     return { success: true, message: 'Usuário gerido via Auth.' };
 }
+export async function syncUserUpdateToSupabase(userId: string, updates: any, config?: SupabaseConfig): Promise<void> {
+    try {
+        const client = getSupabaseClient(config);
+        if (!client) return;
+        await client.from('profiles').update(updates).eq('id', userId);
+    } catch {}
+}
+
+export async function deleteUserFromSupabase(userId: string, config?: SupabaseConfig): Promise<void> {
+    try {
+        const client = getSupabaseClient(config);
+        if (!client) return;
+        await client.from('profiles').delete().eq('id', userId);
+    } catch {}
+}
