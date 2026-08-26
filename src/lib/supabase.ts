@@ -16,8 +16,12 @@ export function normalizeSupabaseUrl(url: string): string {
     return cleaned;
 }
 
-function isNewSupabaseApiKey(key: string): boolean {
-    return key.startsWith('sb_publishable_') || key.startsWith('sb_secret_');
+function sanitizeSupabaseValue(value: string): string {
+    return value.trim().replace(/^["']+|["']+$/g, '').trim();
+}
+
+function isJwtToken(token: string): boolean {
+    return token.startsWith('eyJ');
 }
 
 function supabaseFetch(apiKey: string): typeof fetch {
@@ -26,7 +30,9 @@ function supabaseFetch(apiKey: string): typeof fetch {
         headers.set('apikey', apiKey);
         const authorization = headers.get('Authorization');
         const bearer = authorization?.replace(/^Bearer\s+/i, '') || '';
-        if (bearer && isNewSupabaseApiKey(bearer)) {
+        // Chaves sb_publishable_ não são JWT. O Auth do Supabase responde "Invalid API key"
+        // se elas forem enviadas em Authorization: Bearer.
+        if (bearer && !isJwtToken(bearer)) {
             headers.delete('Authorization');
         }
         return fetch(input, { ...init, headers });
@@ -34,12 +40,12 @@ function supabaseFetch(apiKey: string): typeof fetch {
 }
 
 export function getSupabaseClient(config?: SupabaseConfig): SupabaseClient | null {
-    const envUrl = (import.meta.env.VITE_SUPABASE_URL || '').trim();
-    const envKey = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
+    const envUrl = sanitizeSupabaseValue(import.meta.env.VITE_SUPABASE_URL || '');
+    const envKey = sanitizeSupabaseValue(import.meta.env.VITE_SUPABASE_ANON_KEY || '');
     const stored = config ?? (typeof window !== 'undefined' ? loadSupabaseConfig() : undefined);
 
     const url = normalizeSupabaseUrl(envUrl || stored?.url || '');
-    const key = (envKey || stored?.anonKey || '').trim();
+    const key = sanitizeSupabaseValue(envKey || stored?.anonKey || '');
 
     if (!url || !key) {
         console.warn('[SUPABASE] Variáveis de ambiente VITE_SUPABASE_URL ou VITE_SUPABASE_ANON_KEY não encontradas.');
@@ -56,9 +62,9 @@ export function getSupabaseClient(config?: SupabaseConfig): SupabaseClient | nul
             autoRefreshToken: true,
             detectSessionInUrl: true,
         },
-        global: isNewSupabaseApiKey(key)
-            ? { fetch: supabaseFetch(key) }
-            : undefined,
+        global: {
+            fetch: supabaseFetch(key),
+        },
     });
 
     lastUrl = url;

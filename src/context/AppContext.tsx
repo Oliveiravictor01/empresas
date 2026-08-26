@@ -311,8 +311,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [quickAction, setQuickAction] = useState<QuickActionState>({ isOpen: false });
   const [supabaseConfig, setSupabaseConfig] = useState<SupabaseConfig>(() => {
     const loaded = loadSupabaseConfig();
-    const envUrl = (import.meta.env.VITE_SUPABASE_URL || '').trim();
-    const envKey = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
+    const envUrl = (import.meta.env.VITE_SUPABASE_URL || '').trim().replace(/^["']+|["']+$/g, '');
+    const envKey = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim().replace(/^["']+|["']+$/g, '');
     const url = envUrl || loaded.url;
     const anonKey = envKey || loaded.anonKey;
     return { url, anonKey, connected: Boolean(url && anonKey) };
