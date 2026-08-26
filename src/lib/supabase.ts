@@ -450,3 +450,30 @@ export async function testSupabaseAuthSetup(config?: SupabaseConfig): Promise<{ 
     if (!client) return { success: false, message: 'Cliente não inicializado.' };
     return { success: true, message: 'Auth configurado.' };
 }
+export async function fetchSupabaseUsersWithRelations(config?: SupabaseConfig): Promise<any[]> {
+    try {
+        const client = getSupabaseClient(config);
+        if (!client) return [];
+        const { data, error } = await client.from('profiles').select('*, user_companies(*)');
+        if (error) return [];
+        return data || [];
+    } catch {
+        return [];
+    }
+}
+
+export async function syncUserUpdateToSupabase(userId: string, updates: any, config?: SupabaseConfig): Promise<void> {
+    try {
+        const client = getSupabaseClient(config);
+        if (!client) return;
+        await client.from('profiles').update(updates).eq('id', userId);
+    } catch {}
+}
+
+export async function deleteUserFromSupabase(userId: string, config?: SupabaseConfig): Promise<void> {
+    try {
+        const client = getSupabaseClient(config);
+        if (!client) return;
+        await client.from('profiles').delete().eq('id', userId);
+    } catch {}
+}
