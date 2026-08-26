@@ -28,6 +28,8 @@ export const ProductsServicesView: React.FC = () => {
     data,
     canEditOrDelete,
     selectedCompanyId,
+    allowedCompanies,
+    isMasterUser,
     addProduct,
     updateProduct,
     deleteProduct,
@@ -35,13 +37,15 @@ export const ProductsServicesView: React.FC = () => {
   } = useApp();
 
   const [search, setSearch] = useState('');
-  const [filterCompany, setFilterCompany] = useState<string>(selectedCompanyId || 'all');
+  const [filterCompany, setFilterCompany] = useState<string>(
+    selectedCompanyId || (!isMasterUser && allowedCompanies[0]?.id) || 'all'
+  );
   const [filterType, setFilterType] = useState<'all' | 'Produto' | 'Serviço' | 'com_ficha'>('all');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
 
   // Form States
-  const defaultComp = selectedCompanyId || (data.companies[0]?.id || '');
+  const defaultComp = selectedCompanyId || allowedCompanies[0]?.id || data.companies[0]?.id || '';
   const [formCompanyId, setFormCompanyId] = useState(defaultComp);
   const [formName, setFormName] = useState('');
   const [formSku, setFormSku] = useState('');
@@ -320,8 +324,8 @@ export const ProductsServicesView: React.FC = () => {
           onChange={(e) => setFilterCompany(e.target.value)}
           className="px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 border-0 text-xs font-semibold text-slate-900 dark:text-white"
         >
-          <option value="all">Todas as 8 Empresas</option>
-          {data.companies.map((c) => (
+          <option value="all">{isMasterUser ? 'Todas as empresas' : 'Empresas vinculadas'}</option>
+          {(isMasterUser ? data.companies : allowedCompanies).map((c) => (
             <option key={c.id} value={c.id}>
               {c.name}
             </option>
@@ -600,7 +604,7 @@ export const ProductsServicesView: React.FC = () => {
                     onChange={(e) => setFormCompanyId(e.target.value)}
                     className="w-full px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 border-0 text-xs font-semibold text-slate-900 dark:text-white"
                   >
-                    {data.companies.map((c) => (
+                    {(isMasterUser ? data.companies : allowedCompanies).map((c) => (
                       <option key={c.id} value={c.id}>
                         {c.name}
                       </option>

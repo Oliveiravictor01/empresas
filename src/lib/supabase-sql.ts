@@ -390,6 +390,7 @@ DECLARE
   perm_create BOOLEAN;
   perm_edit BOOLEAN;
   perm_delete BOOLEAN;
+  v_role TEXT;
 BEGIN
   IF public.is_master() THEN
     RETURN TRUE;
@@ -403,17 +404,51 @@ BEGIN
     AND up.module = mod_name
     AND p.status = 'active';
 
-  IF NOT FOUND THEN
+  IF FOUND THEN
+    CASE act_name
+      WHEN 'view' THEN RETURN COALESCE(perm_view, false);
+      WHEN 'create' THEN RETURN COALESCE(perm_create, false);
+      WHEN 'edit' THEN RETURN COALESCE(perm_edit, false);
+      WHEN 'delete' THEN RETURN COALESCE(perm_delete, false);
+      ELSE RETURN FALSE;
+    END CASE;
+  END IF;
+
+  -- Sem linha na matriz: usa o padrão do papel (OPERADOR vê catálogo/produtos)
+  SELECT UPPER(role) INTO v_role
+  FROM public.profiles
+  WHERE id = auth.uid() AND status = 'active';
+
+  IF v_role IS NULL THEN
     RETURN FALSE;
   END IF;
 
-  CASE act_name
-    WHEN 'view' THEN RETURN COALESCE(perm_view, false);
-    WHEN 'create' THEN RETURN COALESCE(perm_create, false);
-    WHEN 'edit' THEN RETURN COALESCE(perm_edit, false);
-    WHEN 'delete' THEN RETURN COALESCE(perm_delete, false);
-    ELSE RETURN FALSE;
-  END CASE;
+  IF v_role IN ('MASTER', 'ADMIN') THEN
+    RETURN TRUE;
+  END IF;
+
+  IF v_role IN ('GERENTE', 'MANAGER') THEN
+    IF mod_name IN ('users', 'settings') THEN
+      RETURN FALSE;
+    END IF;
+    IF mod_name = 'activity_logs' THEN
+      RETURN act_name = 'view';
+    END IF;
+    IF mod_name = 'companies' THEN
+      RETURN act_name IN ('view', 'edit');
+    END IF;
+    RETURN TRUE;
+  END IF;
+
+  -- OPERADOR / EMPLOYEE
+  IF mod_name IN ('sales', 'inventory', 'customers', 'tasks') THEN
+    RETURN act_name IN ('view', 'create');
+  END IF;
+  IF mod_name IN ('products', 'suppliers', 'dashboard') THEN
+    RETURN act_name = 'view';
+  END IF;
+
+  RETURN FALSE;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
@@ -559,17 +594,15 @@ DECLARE
   v_full_name TEXT;
   v_username TEXT;
 BEGIN
-  v_role := COALESCE(new.raw_user_meta_data->>'role', 'OPERADOR');
-  v_is_master := COALESCE((new.raw_user_meta_data->>'is_master')::boolean, false);
-  
-  IF LOWER(new.email) = 'oliveira.victor968@gmail.com' OR v_role = 'MASTER' THEN
+  -- Nunca confiar em raw_user_meta_data para papel MASTER (signup público).
+  v_role := 'OPERADOR';
+  v_is_master := false;
+  v_status := 'pending';
+
+  IF LOWER(new.email) = 'oliveira.victor968@gmail.com' THEN
     v_role := 'MASTER';
     v_is_master := true;
     v_status := 'active';
-  ELSIF v_is_master = true THEN
-    v_status := 'active';
-  ELSE
-    v_status := 'pending';
   END IF;
 
   v_full_name := COALESCE(
@@ -599,10 +632,7 @@ BEGIN
   SET 
     email = EXCLUDED.email,
     username = COALESCE(profiles.username, EXCLUDED.username),
-    full_name = EXCLUDED.full_name,
-    role = EXCLUDED.role,
-    is_master = EXCLUDED.is_master,
-    status = EXCLUDED.status,
+    full_name = COALESCE(EXCLUDED.full_name, profiles.full_name),
     updated_at = NOW();
 
   RETURN new;

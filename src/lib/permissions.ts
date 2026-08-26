@@ -180,6 +180,11 @@ export function checkUserModulePermission(
   }
 
   const modulePerm = user.permissions[module];
-  if (!modulePerm) return false;
+  if (!modulePerm) {
+    const defaultPerms = getDefaultRolePermissions(user.role);
+    const mod = defaultPerms[module];
+    if (!mod) return false;
+    return Boolean(mod[`can_${action}`]);
+  }
   return Boolean(modulePerm[`can_${action}`]);
 }

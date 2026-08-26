@@ -1,6 +1,6 @@
 import { createClient, SupabaseClient, Session, User } from '@supabase/supabase-js';
 import { AppData, SupabaseConfig, loadSupabaseConfig } from './storage';
-import { Company, Sale, SaleItem, Expense, AccountPayable, AccountReceivable, Product, InventoryMovement, Customer, Supplier, Task, ActivityLog, UserProfile, UnitType } from '../types';
+import { Company, Sale, SaleItem, Expense, AccountPayable, AccountReceivable, Product, InventoryMovement, Customer, Supplier, Task, ActivityLog, UserProfile, UserAccount, UserRole, UnitType, PermissionsMap } from '../types';
 import { getFullPermissions, getDefaultRolePermissions, getEmptyPermissions } from './permissions';
 import { generateUUID } from './utils';
 
@@ -39,13 +39,17 @@ function supabaseFetch(apiKey: string): typeof fetch {
     };
 }
 
-export function getSupabaseClient(config?: SupabaseConfig): SupabaseClient | null {
+function getResolvedSupabaseCredentials(config?: SupabaseConfig): { url: string; key: string } {
     const envUrl = sanitizeSupabaseValue(import.meta.env.VITE_SUPABASE_URL || '');
     const envKey = sanitizeSupabaseValue(import.meta.env.VITE_SUPABASE_ANON_KEY || '');
     const stored = config ?? (typeof window !== 'undefined' ? loadSupabaseConfig() : undefined);
-
     const url = normalizeSupabaseUrl(envUrl || stored?.url || '');
     const key = sanitizeSupabaseValue(envKey || stored?.anonKey || '');
+    return { url, key };
+}
+
+export function getSupabaseClient(config?: SupabaseConfig): SupabaseClient | null {
+    const { url, key } = getResolvedSupabaseCredentials(config);
 
     if (!url || !key) {
         console.warn('[SUPABASE] Variáveis de ambiente VITE_SUPABASE_URL ou VITE_SUPABASE_ANON_KEY não encontradas.');
@@ -70,6 +74,14 @@ export function getSupabaseClient(config?: SupabaseConfig): SupabaseClient | nul
     lastUrl = url;
     lastKey = key;
     return cachedClient;
+}
+
+function formatAuthError(message?: string | null): string {
+    const raw = (message || '').trim();
+    if (/invalid api key/i.test(raw)) {
+        return 'A chave VITE_SUPABASE_ANON_KEY não é deste projeto (ou está incompleta). No Supabase: Project Settings → API → copie a chave "anon" / "public" que começa com eyJ. Cole no Vercel sem aspas e faça Redeploy.';
+    }
+    return raw || 'E-mail ou senha incorretos.';
 }
 
 const UUID_RE =
@@ -110,6 +122,24 @@ function missingColumnFromError(message?: string): string | null {
     return match?.[1] ?? null;
 }
 
+function isMissingRelationError(message?: string): boolean {
+    const text = message || '';
+    return /Could not find a relationship|Could not find the table|schema cache|does not exist/i.test(text);
+}
+
+async function selectRows(
+    client: SupabaseClient,
+    table: string,
+    columns = '*'
+): Promise<{ rows: any[]; error?: string }> {
+    const { data, error } = await client.from(table).select(columns);
+    if (error) {
+        console.warn(`[SUPABASE] ${table}:`, error.message);
+        return { rows: [], error: error.message };
+    }
+    return { rows: data || [] };
+}
+
 async function writeWithSchemaFallback(
     table: string,
     payload: Record<string, unknown> | Record<string, unknown>[],
@@ -139,6 +169,11 @@ async function writeWithSchemaFallback(
         if (/last_entry_date|last_movement_date|invalid input syntax for type date/i.test(combined)) {
             current = omitColumn(omitColumn(current, 'last_entry_date'), 'last_movement_date');
             console.warn(`[SUPABASE] Omitindo datas incompatíveis em ${table}.`);
+            continue;
+        }
+
+        if (table === 'profiles' && /company_ids|permissions|invalid input syntax/i.test(combined)) {
+            current = omitColumn(omitColumn(current, 'company_ids'), 'permissions');
             continue;
         }
 
@@ -465,18 +500,20 @@ async function resolveAppUser(
                 full_name: authUser.user_metadata?.full_name || email.split('@')[0],
                 role: email === 'oliveira.victor968@gmail.com' ? 'MASTER' : 'OPERADOR',
                 is_master: email === 'oliveira.victor968@gmail.com',
-                status: 'active',
+                status: email === 'oliveira.victor968@gmail.com' ? 'active' : 'pending',
             })
             .select()
             .single();
         profileData = insertedProfile;
     }
 
+    const profileActive = (profileData?.status || 'active') === 'active';
     const isMaster =
-        profileData?.is_master ||
-        profileData?.role === 'MASTER' ||
-        profileData?.role === 'admin' ||
-        email === 'oliveira.victor968@gmail.com';
+        profileActive &&
+        (profileData?.is_master ||
+            profileData?.role === 'MASTER' ||
+            profileData?.role === 'admin' ||
+            email === 'oliveira.victor968@gmail.com');
 
     let companiesList: Company[] = [];
     if (isMaster) {
@@ -485,10 +522,37 @@ async function resolveAppUser(
     } else {
         const { data: userComps } = await client
             .from('user_companies')
-            .select('company_id, companies(*)')
+            .select('company_id')
             .eq('user_id', userId);
+        const linkedIds = (userComps || []).map((uc: any) => uc.company_id).filter(Boolean);
+        const profileCompanyIds = Array.isArray(profileData?.company_ids)
+            ? profileData.company_ids.filter((id: string) => id && id !== '*')
+            : [];
+        const ids = linkedIds.length ? linkedIds : profileCompanyIds;
+        if (ids.length) {
+            const { data: allComps } = await client.from('companies').select('*');
+            companiesList = (allComps || []).filter((c: any) => ids.includes(c.id));
+        }
+    }
 
-        companiesList = (userComps || []).map((uc: any) => uc.companies).filter(Boolean);
+    let resolvedPermissions = isMaster
+        ? getFullPermissions()
+        : getDefaultRolePermissions(profileData?.role || 'OPERADOR');
+    if (!isMaster) {
+        const { data: permRows } = await client.from('user_permissions').select('*').eq('user_id', userId);
+        if (permRows && permRows.length) {
+            resolvedPermissions = permRows.reduce((acc: PermissionsMap, p: any) => {
+                acc[p.module] = {
+                    can_view: Boolean(p.can_view),
+                    can_create: Boolean(p.can_create),
+                    can_edit: Boolean(p.can_edit),
+                    can_delete: Boolean(p.can_delete),
+                };
+                return acc;
+            }, getDefaultRolePermissions(profileData?.role || 'OPERADOR'));
+        } else if (profileData?.permissions && typeof profileData.permissions === 'object') {
+            resolvedPermissions = { ...resolvedPermissions, ...profileData.permissions };
+        }
     }
 
     const userProfile: UserProfile = {
@@ -498,10 +562,14 @@ async function resolveAppUser(
         role: isMaster ? 'MASTER' : (profileData?.role || 'OPERADOR'),
         is_master: isMaster,
         status: profileData?.status || 'active',
-        company_ids: isMaster ? ['*'] : companiesList.map((c) => c.id),
-        permissions: isMaster
-            ? getFullPermissions()
-            : profileData?.permissions || getDefaultRolePermissions(profileData?.role || 'OPERADOR'),
+        company_ids: isMaster
+            ? ['*']
+            : companiesList.length
+              ? companiesList.map((c) => c.id)
+              : Array.isArray(profileData?.company_ids)
+                ? profileData.company_ids
+                : [],
+        permissions: resolvedPermissions,
         created_at: profileData?.created_at || new Date().toISOString(),
         last_login: new Date().toISOString(),
     };
@@ -522,10 +590,21 @@ export async function signInSupabase(email: string, pass: string, config?: Supab
         });
 
         if (authError || !authData.user) {
-            return { success: false, message: authError?.message || 'E-mail ou senha incorretos.' };
+            return { success: false, message: formatAuthError(authError?.message) };
         }
 
         const resolved = await resolveAppUser(client, authData.user);
+        const status = resolved.user.status || 'active';
+        if (status !== 'active') {
+            await client.auth.signOut();
+            return {
+                success: false,
+                message:
+                    status === 'pending'
+                        ? 'Conta aguardando aprovação do administrador.'
+                        : 'Esta conta está inativa. Solicite reativação a um MASTER.',
+            };
+        }
         return { success: true, user: resolved.user, companies: resolved.companies };
     } catch (err: any) {
         return { success: false, message: err.message || 'Erro ao autenticar no Supabase.' };
@@ -546,6 +625,10 @@ export async function getInitialSupabaseSession(config?: SupabaseConfig): Promis
         }
 
         const resolved = await resolveAppUser(client, sessionData.session.user);
+        if ((resolved.user.status || 'active') !== 'active') {
+            await client.auth.signOut();
+            return { isAuthenticated: false, error: 'inactive_account' };
+        }
         return { isAuthenticated: true, user: resolved.user, companies: resolved.companies };
     } catch (err: any) {
         return { isAuthenticated: false, error: err.message || 'session_error' };
@@ -840,8 +923,6 @@ export async function createSupabaseMaster(
             data: {
                 full_name: params.name,
                 username: params.username,
-                role: 'MASTER',
-                is_master: true,
             },
         },
     });
@@ -864,8 +945,6 @@ export async function createSupabasePublicUser(
         options: {
             data: {
                 full_name: params.name,
-                role: 'OPERADOR',
-                is_master: false,
             },
         },
     });
@@ -881,35 +960,99 @@ export async function syncUserUpdateToSupabase(
     const client = getSupabaseClient(config);
     if (!client) throw new Error('Cliente Supabase não inicializado.');
 
+    const companyIds = Array.isArray(updates.company_ids)
+        ? updates.company_ids.filter((id: string) => id && id !== '*')
+        : undefined;
+
+    const demoting =
+        (typeof updates.role === 'string' && String(updates.role).toUpperCase() !== 'MASTER') ||
+        updates.is_master === false;
+    const inactivating = updates.status === 'inactive';
+    if (demoting || inactivating) {
+        const { data: profiles } = await client.from('profiles').select('id, role, is_master, status, email');
+        const activeMasters = (profiles || []).filter((p: any) => {
+            const role = String(p.role || '').toUpperCase();
+            const isMasterRow = p.is_master || role === 'MASTER' || role === 'ADMIN';
+            return isMasterRow && (p.status === 'active' || !p.status);
+        });
+        const targetIsLast =
+            activeMasters.length <= 1 && activeMasters.some((p: any) => p.id === userId);
+        if (targetIsLast) {
+            throw new Error('É necessário manter pelo menos um administrador Master ativo.');
+        }
+    }
+
     const profilePatch = compactRow({
+        id: userId,
+        user_id: userId,
         full_name: updates.name ?? updates.full_name,
         email: updates.email,
         role: updates.role,
         is_master: updates.is_master,
         status: updates.status,
+        company_ids: companyIds,
+        permissions: updates.permissions,
     });
 
-    if (Object.keys(profilePatch).length > 0) {
-        const { error } = await client.from('profiles').update(profilePatch).eq('id', userId);
-        if (error) throw new Error(`profiles: ${error.message}`);
-    }
+    await upsertChecked(client, 'profiles', profilePatch);
 
-    if (Array.isArray(updates.company_ids)) {
-        const { error: delError } = await client.from('user_companies').delete().eq('user_id', userId);
-        if (delError) throw new Error(`user_companies: ${delError.message}`);
-        const rows = updates.company_ids
-            .filter((id: string) => id && id !== '*')
-            .map((companyId: string) => compactRow({
-                id: generateUUID(),
-                user_id: userId,
-                company_id: asUuid(companyId),
-            }))
-            .filter((row) => row.company_id);
-        if (rows.length) {
-            await insertChecked(client, 'user_companies', rows);
+    const warnings: string[] = [];
+
+    if (companyIds) {
+        try {
+            const { error: delError } = await client.from('user_companies').delete().eq('user_id', userId);
+            if (delError) {
+                if (!isMissingRelationError(delError.message)) {
+                    throw new Error(delError.message);
+                }
+            } else {
+                const rows = companyIds.map((companyId: string) =>
+                    compactRow({
+                        id: generateUUID(),
+                        user_id: userId,
+                        company_id: asUuid(companyId) || companyId,
+                    })
+                );
+                if (rows.length) {
+                    await insertChecked(client, 'user_companies', rows);
+                }
+            }
+        } catch (err: any) {
+            warnings.push(`empresas: ${err?.message || err}`);
         }
     }
 
+    if (updates.permissions && typeof updates.permissions === 'object') {
+        try {
+            const { error: delPermError } = await client.from('user_permissions').delete().eq('user_id', userId);
+            if (delPermError) {
+                if (!isMissingRelationError(delPermError.message)) {
+                    throw new Error(delPermError.message);
+                }
+            } else {
+                const permRows = Object.entries(updates.permissions).map(([module, perm]: [string, any]) =>
+                    compactRow({
+                        id: generateUUID(),
+                        user_id: userId,
+                        module,
+                        can_view: Boolean(perm?.can_view),
+                        can_create: Boolean(perm?.can_create),
+                        can_edit: Boolean(perm?.can_edit),
+                        can_delete: Boolean(perm?.can_delete),
+                    })
+                );
+                if (permRows.length) {
+                    await insertChecked(client, 'user_permissions', permRows);
+                }
+            }
+        } catch (err: any) {
+            warnings.push(`permissões: ${err?.message || err}`);
+        }
+    }
+
+    if (warnings.length) {
+        return { success: true, message: `Perfil salvo. ${warnings.join(' | ')}` };
+    }
     return { success: true, message: 'Usuário sincronizado.' };
 }
 
@@ -938,14 +1081,168 @@ export async function testSupabaseAuthSetup(config?: SupabaseConfig): Promise<{ 
     if (!client) return { success: false, message: 'Cliente não inicializado.' };
     return { success: true, message: 'Auth configurado.' };
 }
-export async function fetchSupabaseUsersWithRelations(config?: SupabaseConfig): Promise<any[]> {
+export async function createManagedUserInSupabase(
+    params: {
+        name: string;
+        email: string;
+        password: string;
+        role: UserRole;
+        company_ids: string[];
+        permissions?: PermissionsMap;
+        status?: 'active' | 'inactive' | 'pending';
+    },
+    config?: SupabaseConfig
+): Promise<{ success: boolean; message: string; userId?: string }> {
+    const { url, key } = getResolvedSupabaseCredentials(config);
+    if (!url || !key) return { success: false, message: 'Cliente Supabase não inicializado.' };
+
+    const sessionClient = getSupabaseClient(config);
+    if (!sessionClient) return { success: false, message: 'Cliente Supabase não inicializado.' };
+    const { data: sessionData } = await sessionClient.auth.getUser();
+    if (!sessionData.user) {
+        return { success: false, message: 'Faça login como MASTER para criar usuários.' };
+    }
+    const { data: callerProfile } = await sessionClient
+        .from('profiles')
+        .select('role, is_master, status')
+        .eq('id', sessionData.user.id)
+        .maybeSingle();
+    const callerIsMaster =
+        (callerProfile?.status || 'active') === 'active' &&
+        (callerProfile?.is_master ||
+            String(callerProfile?.role || '').toUpperCase() === 'MASTER' ||
+            String(callerProfile?.role || '').toUpperCase() === 'ADMIN');
+    if (!callerIsMaster) {
+        return { success: false, message: 'Apenas um MASTER ativo pode criar usuários.' };
+    }
+
+    const isMasterRole = params.role === 'MASTER' || params.role === 'admin';
+    const ephemeral = createClient(url, key, {
+        auth: {
+            persistSession: false,
+            autoRefreshToken: false,
+            detectSessionInUrl: false,
+        },
+        global: { fetch: supabaseFetch(key) },
+    });
+
+    const { data, error } = await ephemeral.auth.signUp({
+        email: params.email.trim().toLowerCase(),
+        password: params.password,
+        options: {
+            data: {
+                full_name: params.name.trim(),
+            },
+        },
+    });
+
+    if (error) return { success: false, message: error.message };
+    const userId = data.user?.id;
+    if (!userId) {
+        return {
+            success: false,
+            message: 'Conta criada no Auth, mas o ID não retornou. Confirme o e-mail no Supabase e atualize a lista.',
+        };
+    }
+
+    const permissions = params.permissions || (isMasterRole ? getFullPermissions() : getDefaultRolePermissions(params.role));
+    try {
+        const syncRes = await syncUserUpdateToSupabase(
+            userId,
+            {
+                name: params.name.trim(),
+                email: params.email.trim().toLowerCase(),
+                role: isMasterRole ? 'MASTER' : params.role,
+                is_master: isMasterRole,
+                status: params.status || 'active',
+                company_ids: isMasterRole ? ['*'] : params.company_ids,
+                permissions,
+            },
+            config
+        );
+        return { success: true, message: syncRes.message || 'Usuário criado com permissões.', userId };
+    } catch (err: any) {
+        return {
+            success: false,
+            userId,
+            message: `Conta criada no Auth, mas o perfil não gravou: ${err?.message || 'perfil indisponível'}.`,
+        };
+    }
+}
+
+export async function fetchSupabaseUsersWithRelations(
+    config?: SupabaseConfig
+): Promise<{ success: boolean; users?: UserAccount[]; companies?: Company[]; message?: string }> {
     try {
         const client = getSupabaseClient(config);
-        if (!client) return [];
-        const { data, error } = await client.from('profiles').select('*, user_companies(*)');
-        if (error) return [];
-        return data || [];
-    } catch {
-        return [];
+        if (!client) return { success: false, message: 'Cliente Supabase não inicializado.' };
+
+        const [profilesRes, companiesRes, linksRes, permsRes] = await Promise.all([
+            selectRows(client, 'profiles'),
+            selectRows(client, 'companies'),
+            selectRows(client, 'user_companies'),
+            selectRows(client, 'user_permissions'),
+        ]);
+
+        if (profilesRes.error && profilesRes.rows.length === 0) {
+            return { success: false, message: profilesRes.error, users: [] };
+        }
+
+        const companiesByUser = new Map<string, string[]>();
+        for (const row of linksRes.rows) {
+            const uid = String(row.user_id || '');
+            if (!uid || !row.company_id) continue;
+            const list = companiesByUser.get(uid) || [];
+            list.push(row.company_id);
+            companiesByUser.set(uid, list);
+        }
+
+        const permsByUser = new Map<string, any[]>();
+        for (const row of permsRes.rows) {
+            const uid = String(row.user_id || '');
+            if (!uid) continue;
+            const list = permsByUser.get(uid) || [];
+            list.push(row);
+            permsByUser.set(uid, list);
+        }
+
+        const users: UserAccount[] = profilesRes.rows.map((row: any) => {
+            const isMaster = row.is_master || row.role === 'MASTER' || row.role === 'admin';
+            const permRows: any[] = permsByUser.get(row.id) || [];
+            const permissionsFromJson =
+                row.permissions && typeof row.permissions === 'object' ? row.permissions : null;
+            const permissions = isMaster
+                ? getFullPermissions()
+                : permRows.length
+                  ? permRows.reduce((acc: PermissionsMap, p: any) => {
+                        acc[p.module] = {
+                            can_view: Boolean(p.can_view),
+                            can_create: Boolean(p.can_create),
+                            can_edit: Boolean(p.can_edit),
+                            can_delete: Boolean(p.can_delete),
+                        };
+                        return acc;
+                    }, getEmptyPermissions())
+                  : permissionsFromJson || getDefaultRolePermissions(row.role || 'OPERADOR');
+
+            const linkedIds = companiesByUser.get(row.id) || [];
+            const profileCompanyIds = Array.isArray(row.company_ids) ? row.company_ids.filter(Boolean) : [];
+
+            return {
+                id: row.id,
+                email: row.email || '',
+                name: row.full_name || row.email || 'Usuário',
+                role: isMaster ? 'MASTER' : row.role || 'OPERADOR',
+                is_master: isMaster,
+                status: row.status || 'active',
+                company_ids: isMaster ? ['*'] : linkedIds.length ? linkedIds : profileCompanyIds,
+                permissions,
+                created_at: row.created_at || new Date().toISOString(),
+            };
+        });
+
+        return { success: true, users, companies: companiesRes.rows };
+    } catch (err: any) {
+        return { success: false, message: err.message || 'Erro ao carregar usuários.' };
     }
 }

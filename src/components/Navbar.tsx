@@ -106,12 +106,12 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenLogin }) => {
               <button
                 id="company-switcher-btn"
                 onClick={() => {
-                  if (isMasterUser || allowedCompanies.length > 1) {
+                  if (isMasterUser || allowedCompanies.length > 0) {
                     setShowCompanyMenu(!showCompanyMenu);
                   }
                 }}
                 className={`flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 text-xs font-bold transition-all border border-slate-200/60 dark:border-slate-700/60 ${
-                  isMasterUser || allowedCompanies.length > 1
+                  isMasterUser || allowedCompanies.length > 0
                     ? 'hover:bg-slate-200 dark:hover:bg-slate-750 cursor-pointer'
                     : 'cursor-default'
                 }`}
@@ -132,7 +132,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenLogin }) => {
                     <span>{isMasterUser ? 'Visão Geral (Todas)' : (allowedCompanies[0]?.name || 'Minha Empresa')}</span>
                   </div>
                 )}
-                {(isMasterUser || allowedCompanies.length > 1) && (
+                {(isMasterUser || allowedCompanies.length > 0) && (
                   <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
                 )}
               </button>

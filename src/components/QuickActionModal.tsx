@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { PaymentMethod, ExpenseCategory, UnitType, ItemType } from '../types';
 import { formatCurrency, getTodayDateString } from '../lib/utils';
@@ -41,10 +41,21 @@ export const QuickActionModal: React.FC = () => {
     'sale' | 'expense' | 'receivable' | 'payable' | 'stock_in' | 'stock_out' | 'stock_adjust'
   >(quickAction.defaultType || 'sale');
 
-  // Default company: current selected company or first in allowed companies list
-  const defaultCompId =
-    selectedCompanyId || (allowedCompanies.length > 0 ? allowedCompanies[0].id : '');
-  const [companyId, setCompanyId] = useState<string>(defaultCompId);
+  const [companyId, setCompanyId] = useState<string>('');
+
+  const effectiveCompanyId = useMemo(() => {
+    if (companyId && allowedCompanies.some((c) => c.id === companyId)) return companyId;
+    if (selectedCompanyId && allowedCompanies.some((c) => c.id === selectedCompanyId)) {
+      return selectedCompanyId;
+    }
+    return allowedCompanies[0]?.id || '';
+  }, [companyId, selectedCompanyId, allowedCompanies]);
+
+  useEffect(() => {
+    if (effectiveCompanyId && companyId !== effectiveCompanyId) {
+      setCompanyId(effectiveCompanyId);
+    }
+  }, [effectiveCompanyId, companyId]);
 
   // Form states - Venda
   const [selectedProductId, setSelectedProductId] = useState<string>('');
@@ -108,15 +119,25 @@ export const QuickActionModal: React.FC = () => {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Available items for the selected company
-  const companyProducts = useMemo(
-    () => data.products.filter((p) => p.company_id === companyId),
-    [data.products, companyId]
-  );
+  const companyProducts = useMemo(() => {
+    if (!effectiveCompanyId) return [];
+    const exact = data.products.filter((p) => p.company_id === effectiveCompanyId);
+    if (exact.length) return exact;
+    const company = allowedCompanies.find((c) => c.id === effectiveCompanyId);
+    if (!company) return [];
+    const name = company.name.trim().toLowerCase();
+    return data.products.filter((p) => String(p.company_id || '').trim().toLowerCase() === name);
+  }, [data.products, effectiveCompanyId, allowedCompanies]);
 
-  const companySuppliers = useMemo(
-    () => data.suppliers.filter((s) => s.company_id === companyId),
-    [data.suppliers, companyId]
-  );
+  const companySuppliers = useMemo(() => {
+    if (!effectiveCompanyId) return [];
+    const exact = data.suppliers.filter((s) => s.company_id === effectiveCompanyId);
+    if (exact.length) return exact;
+    const company = allowedCompanies.find((c) => c.id === effectiveCompanyId);
+    if (!company) return [];
+    const name = company.name.trim().toLowerCase();
+    return data.suppliers.filter((s) => String(s.company_id || '').trim().toLowerCase() === name);
+  }, [data.suppliers, effectiveCompanyId, allowedCompanies]);
 
   // Selected item metadata for sale
   const selectedProductItem = useMemo(
@@ -175,7 +196,7 @@ export const QuickActionModal: React.FC = () => {
   // Submit Handlers
   const handleSaveSale = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!companyId) {
+    if (!effectiveCompanyId) {
       alert('Selecione uma empresa primeiro.');
       return;
     }
@@ -185,7 +206,7 @@ export const QuickActionModal: React.FC = () => {
     }
 
     addSale({
-      company_id: companyId,
+      company_id: effectiveCompanyId,
       customer_name: customerName.trim() || 'Cliente Avulso',
       product_service: productService.trim(),
       quantity: qtyNum,
@@ -220,7 +241,7 @@ export const QuickActionModal: React.FC = () => {
 
   const handleSaveExpense = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!companyId) {
+    if (!effectiveCompanyId) {
       alert('Selecione uma empresa primeiro.');
       return;
     }
@@ -231,7 +252,7 @@ export const QuickActionModal: React.FC = () => {
     }
 
     addExpense({
-      company_id: companyId,
+      company_id: effectiveCompanyId,
       description: expenseDesc.trim(),
       category: expenseCategory,
       supplier_name: expenseSupplier.trim() || 'Fornecedor Diversos',
@@ -248,7 +269,7 @@ export const QuickActionModal: React.FC = () => {
 
   const handleSaveReceivable = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!companyId) {
+    if (!effectiveCompanyId) {
       alert('Selecione uma empresa.');
       return;
     }
@@ -259,7 +280,7 @@ export const QuickActionModal: React.FC = () => {
     }
 
     addAccountReceivable({
-      company_id: companyId,
+      company_id: effectiveCompanyId,
       customer_name: recCustomer.trim() || 'Cliente Diversos',
       description: recDesc.trim(),
       amount: amt,
@@ -272,7 +293,7 @@ export const QuickActionModal: React.FC = () => {
 
   const handleSavePayable = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!companyId) {
+    if (!effectiveCompanyId) {
       alert('Selecione uma empresa.');
       return;
     }
@@ -283,7 +304,7 @@ export const QuickActionModal: React.FC = () => {
     }
 
     addAccountPayable({
-      company_id: companyId,
+      company_id: effectiveCompanyId,
       supplier_name: paySupplier.trim() || 'Fornecedor Diversos',
       description: payDesc.trim(),
       amount: amt,
@@ -296,7 +317,7 @@ export const QuickActionModal: React.FC = () => {
 
   const handleSaveStockPurchase = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!companyId || !stockProductId) {
+    if (!effectiveCompanyId || !stockProductId) {
       alert('Selecione a empresa e o produto/insumo.');
       return;
     }
@@ -308,7 +329,7 @@ export const QuickActionModal: React.FC = () => {
     }
 
     recordStockPurchase({
-      companyId,
+      companyId: effectiveCompanyId,
       productId: stockProductId,
       purchaseQty: qty,
       purchaseUnit: stockPurchaseUnit,
@@ -324,7 +345,7 @@ export const QuickActionModal: React.FC = () => {
 
   const handleSaveStockOut = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!companyId || !stockOutProductId) {
+    if (!effectiveCompanyId || !stockOutProductId) {
       alert('Selecione o produto/insumo.');
       return;
     }
@@ -335,7 +356,7 @@ export const QuickActionModal: React.FC = () => {
     }
 
     addStockMovement(
-      companyId,
+      effectiveCompanyId,
       stockOutProductId,
       'saida',
       qty,
@@ -349,7 +370,7 @@ export const QuickActionModal: React.FC = () => {
 
   const handleSaveAdjustment = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!companyId || !adjustProductId) {
+    if (!effectiveCompanyId || !adjustProductId) {
       alert('Selecione o produto/insumo.');
       return;
     }
@@ -360,7 +381,7 @@ export const QuickActionModal: React.FC = () => {
     }
 
     recordManualAdjustment({
-      companyId,
+      companyId: effectiveCompanyId,
       productId: adjustProductId,
       newQuantityBase: counted,
       reasonCategory: adjustReasonCat,
@@ -499,7 +520,7 @@ export const QuickActionModal: React.FC = () => {
             Empresa Vinculada *
           </label>
           <select
-            value={companyId}
+            value={effectiveCompanyId}
             onChange={(e) => {
               setCompanyId(e.target.value);
               setSelectedProductId('');
@@ -533,11 +554,19 @@ export const QuickActionModal: React.FC = () => {
                   className="w-full px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 border-0 text-xs font-semibold text-slate-900 dark:text-white"
                 >
                   <option value="">-- Selecionar item cadastrado ou digitar abaixo --</option>
-                  {companyProducts.map((p) => (
+                  {companyProducts.length === 0 ? (
+                    <option value="" disabled>
+                      {effectiveCompanyId
+                        ? 'Nenhum item no catálogo desta empresa'
+                        : 'Nenhuma empresa disponível neste login'}
+                    </option>
+                  ) : (
+                    companyProducts.map((p) => (
                     <option key={p.id} value={p.id}>
                       [{p.type}] {p.name} - {formatCurrency(p.sale_price)}
                     </option>
-                  ))}
+                    ))
+                  )}
                 </select>
               </div>
 

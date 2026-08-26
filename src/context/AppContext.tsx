@@ -333,6 +333,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   // Master user role verification
   const isMasterUser = useMemo(() => {
     if (!user) return false;
+    if (user.status && user.status !== 'active') return false;
     if (user.is_master === true) return true;
     const r = (user.role || '').toUpperCase();
     return r === 'MASTER' || r === 'ADMIN';
@@ -716,11 +717,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       description: `Login autenticado no Supabase: ${loggedUser.name} (${loggedUser.email}) [${loggedUser.role}]`,
     });
 
-    if (loggedUser.status === 'pending') {
-      showToast('Conta em aprovação. O Administrador Master precisa vincular suas empresas.', 'warning', 6000);
-    } else {
-      showToast(`Bem-vindo, ${loggedUser.name}!`, 'success');
-    }
+    showToast(`Bem-vindo, ${loggedUser.name}!`, 'success');
 
     return { success: true };
   };
