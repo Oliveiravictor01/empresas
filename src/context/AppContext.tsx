@@ -309,7 +309,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   });
   const [searchQuery, setSearchQuery] = useState('');
   const [quickAction, setQuickAction] = useState<QuickActionState>({ isOpen: false });
-  const [supabaseConfig, setSupabaseConfig] = useState<SupabaseConfig>(() => loadSupabaseConfig());
+  const [supabaseConfig, setSupabaseConfig] = useState<SupabaseConfig>(() => {
+    const loaded = loadSupabaseConfig();
+    const envUrl = (import.meta.env.VITE_SUPABASE_URL || '').trim();
+    const envKey = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
+    const url = envUrl || loaded.url;
+    const anonKey = envKey || loaded.anonKey;
+    return { url, anonKey, connected: Boolean(url && anonKey) };
+  });
   const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>('DISCONNECTED');
   const [toasts, setToasts] = useState<ToastNotification[]>([]);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
@@ -370,7 +377,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           }
         },
         onRefreshNeeded: () => {
-          if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
+          if (getSupabaseClient(supabaseConfig)) {
             pullDataFromSupabase(supabaseConfig)
               .then((res) => {
                 if (res.success && res.data) {
@@ -410,7 +417,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const performMasterAndSessionCheck = async () => {
       try {
         setIsCheckingMaster(true);
-        if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
+        if (getSupabaseClient(supabaseConfig)) {
           // 1. Verifica se existe Master configurado no Supabase
           const supaHasMaster = await checkSupabaseHasMaster(supabaseConfig);
           if (isMounted) {
@@ -423,17 +430,25 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           if (sessionRes.isAuthenticated && sessionRes.user && isMounted) {
             setUser(sessionRes.user);
             setIsAuthenticated(true);
-            setData((prev) => ({
-              ...prev,
-              user: sessionRes.user!,
-              companies: sessionRes.companies || [],
-            }));
             saveAuthSession({ isAuthenticated: true, userId: sessionRes.user.id });
+
+            const pullRes = await pullDataFromSupabase(supabaseConfig);
+            if (isMounted) {
+              setData((prev) => ({
+                ...prev,
+                ...(pullRes.success && pullRes.data ? pullRes.data : {}),
+                user: sessionRes.user!,
+                companies:
+                  sessionRes.companies && sessionRes.companies.length > 0
+                    ? sessionRes.companies
+                    : pullRes.data?.companies || prev.companies,
+              }));
+            }
 
             if (!sessionRes.user.is_master && sessionRes.user.role !== 'MASTER' && sessionRes.companies && sessionRes.companies.length > 0) {
               setSelectedCompanyId(sessionRes.companies[0].id);
             }
-          } else if (isMounted) {
+          } else if (isMounted && !sessionRes.error) {
             setIsAuthenticated(false);
             clearAuthSession();
           }
@@ -445,9 +460,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }
       } catch (err) {
         console.warn('[SUPABASE] Erro na verificação inicial de autenticação:', err);
-        if (isMounted) {
-          setIsAuthenticated(false);
-        }
       } finally {
         if (isMounted) {
           setIsCheckingMaster(false);
@@ -460,7 +472,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return () => {
       isMounted = false;
     };
-  }, [supabaseConfig]);
+  }, [supabaseConfig.connected, supabaseConfig.url, supabaseConfig.anonKey]);
 
   // Activity Logger
   const logActivity = useCallback(
@@ -489,7 +501,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         ...prev,
         activityLogs: [newLog, ...(prev.activityLogs || [])].slice(0, 300),
       }));
-      syncActivityLogToSupabase(newLog, supabaseConfig).catch(console.warn);
+      persistCloud('auditoria', syncActivityLogToSupabase(newLog, supabaseConfig), true);
     },
     [data.companies, user, supabaseConfig]
   );
@@ -605,6 +617,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     []
   );
 
+  const persistCloud = useCallback(
+    (label: string, task: Promise<void>, silent = false) => {
+      task.catch((err: any) => {
+        console.warn(`[SUPABASE] ${label}:`, err);
+        if (!silent) {
+          showToast(`Não gravou no banco (${label}): ${err?.message || 'erro desconhecido'}`, 'error', 7000);
+        }
+      });
+    },
+    [showToast]
+  );
+
   const removeToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
@@ -667,10 +691,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setIsAuthenticated(true);
     saveAuthSession({ isAuthenticated: true, userId: loggedUser.id });
 
+    const pullRes = await pullDataFromSupabase(supabaseConfig);
     setData((prev) => ({
       ...prev,
+      ...(pullRes.success && pullRes.data ? pullRes.data : {}),
       user: loggedUser,
-      companies: permittedCompanies,
+      companies: permittedCompanies.length > 0 ? permittedCompanies : pullRes.data?.companies || prev.companies,
     }));
 
     if (loggedUser.is_master || loggedUser.role === 'MASTER') {
@@ -727,7 +753,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       const cleanEmail = (params.email?.trim() || `${cleanUsername}@omnigestao.local`).toLowerCase();
 
       let supaUserId: string | undefined;
-      if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
+      if (getSupabaseClient(supabaseConfig)) {
         const supaResult = await createSupabaseMaster(
           { name: cleanName, username: cleanUsername, email: cleanEmail, password: params.password },
           supabaseConfig
@@ -799,7 +825,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         return { success: false, message: 'Por favor, informe um e-mail válido cadastrado.' };
       }
 
-      if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
+      if (getSupabaseClient(supabaseConfig)) {
         const supaRes = await requestPasswordReset(cleanEmail, supabaseConfig);
         return supaRes;
       }
@@ -828,7 +854,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
 
       let supaUserId: string | undefined;
-      if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
+      if (getSupabaseClient(supabaseConfig)) {
         const supaResult = await createSupabasePublicUser(params, supabaseConfig);
         if (!supaResult.success) {
           return { success: false, message: `Erro ao registrar no Supabase: ${supaResult.message}` };
@@ -903,8 +929,24 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       });
 
       showToast(`Usuário "${target.name}" aprovado e ativado com sucesso!`, 'success');
+
+      if (getSupabaseClient(supabaseConfig)) {
+        persistCloud(
+          'aprovação de usuário',
+          syncUserUpdateToSupabase(
+            userId,
+            {
+              role: normalizedRole,
+              status: 'active',
+              company_ids: companyIds.length > 0 ? companyIds : (data.companies[0] ? [data.companies[0].id] : []),
+              permissions: updatedPermissions,
+            },
+            supabaseConfig
+          ).then(() => undefined)
+        );
+      }
     },
-    [data.companies, data.users, isMasterUser, logActivity, showToast]
+    [data.companies, data.users, isMasterUser, logActivity, showToast, supabaseConfig, persistCloud]
   );
 
   const resetMasterToSimulateFirstAccess = useCallback(() => {
@@ -920,7 +962,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }, [showToast]);
 
   const refreshData = useCallback(async () => {
-    if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
+    if (getSupabaseClient(supabaseConfig)) {
       const res = await pullDataFromSupabase(supabaseConfig);
       if (res.success && res.data) {
         setData((prev) => ({ ...prev, ...res.data }));
@@ -932,6 +974,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const updated = { ...user, ...updates };
     setUser(updated);
     setData((prev) => ({ ...prev, user: updated }));
+    if (getSupabaseClient(supabaseConfig)) {
+      persistCloud(
+        'perfil',
+        syncUserUpdateToSupabase(updated.id, { name: updated.name, email: updated.email }, supabaseConfig).then(
+          () => undefined
+        )
+      );
+    }
     showToast('Perfil de usuário atualizado.', 'success');
   };
 
@@ -1004,20 +1054,23 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }));
 
       // Sincroniza criação no Supabase se conectado
-      if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-        syncUserUpdateToSupabase(
-          newUser.id,
-          {
-            name: newUser.name,
-            email: newUser.email,
-            role: newUser.role,
-            is_master: newUser.is_master,
-            status: newUser.status,
-            company_ids: newUser.company_ids,
-            permissions: newUser.permissions,
-          },
-          supabaseConfig
-        ).catch((err) => console.warn('Aviso sincronização Supabase:', err));
+      if (getSupabaseClient(supabaseConfig)) {
+        persistCloud(
+          'usuário',
+          syncUserUpdateToSupabase(
+            newUser.id,
+            {
+              name: newUser.name,
+              email: newUser.email,
+              role: newUser.role,
+              is_master: newUser.is_master,
+              status: newUser.status,
+              company_ids: newUser.company_ids,
+              permissions: newUser.permissions,
+            },
+            supabaseConfig
+          ).then(() => undefined)
+        );
       }
 
       logActivity({
@@ -1092,9 +1145,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
 
       // Sincroniza no Supabase
-      if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-        syncUserUpdateToSupabase(id, normalizedUpdates, supabaseConfig).catch((err) =>
-          console.warn('Aviso ao sincronizar alteração de usuário no Supabase:', err)
+      if (getSupabaseClient(supabaseConfig)) {
+        persistCloud(
+          'usuário',
+          syncUserUpdateToSupabase(id, normalizedUpdates, supabaseConfig).then(() => undefined)
         );
       }
 
@@ -1135,10 +1189,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }));
 
       // Sincroniza exclusão no Supabase
-      if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-        deleteUserFromSupabase(id, supabaseConfig).catch((err) =>
-          console.warn('Aviso exclusão no Supabase:', err)
-        );
+      if (getSupabaseClient(supabaseConfig)) {
+        persistCloud('usuário', deleteUserFromSupabase(id, supabaseConfig));
       }
 
       logActivity({
@@ -1292,10 +1344,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       companies: [...prev.companies, created],
     }));
 
-    if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-      syncCompanyToSupabase(created, supabaseConfig).catch((err) =>
-        console.warn('Erro ao sincronizar empresa no Supabase:', err)
-      );
+    if (getSupabaseClient(supabaseConfig)) {
+      persistCloud('empresa', syncCompanyToSupabase(created, supabaseConfig));
     }
 
     showToast(`Empresa "${created.name}" cadastrada com sucesso!`, 'success');
@@ -1307,10 +1357,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setData((prev) => {
       const updated = prev.companies.map((c) => (c.id === id ? { ...c, ...updates } : c));
       const target = updated.find((c) => c.id === id);
-      if (target && supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-        syncCompanyToSupabase(target, supabaseConfig).catch((err) =>
-          console.warn('Erro ao atualizar empresa no Supabase:', err)
-        );
+      if (target && getSupabaseClient(supabaseConfig)) {
+        persistCloud('empresa', syncCompanyToSupabase(target, supabaseConfig));
       }
       return {
         ...prev,
@@ -1337,10 +1385,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       tasks: prev.tasks.filter((t) => t.company_id !== id),
     }));
 
-    if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-      deleteCompanyFromSupabase(id, supabaseConfig).catch((err) =>
-        console.warn('Erro ao excluir empresa no Supabase:', err)
-      );
+    if (getSupabaseClient(supabaseConfig)) {
+      persistCloud('empresa', deleteCompanyFromSupabase(id, supabaseConfig));
     }
 
     if (selectedCompanyId === id) {
@@ -1377,7 +1423,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
       saleItems = [
         {
-          product_id: matched ? matched.id : generateUUID(),
+          product_id: matched ? matched.id : '',
           name: prodName,
           type: matched ? matched.type : 'Produto',
           quantity: Number(saleData.quantity) || 1,
@@ -1532,9 +1578,30 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       inventoryMovements: [...newMovements, ...prev.inventoryMovements],
     }));
 
-    if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-      syncSaleToSupabase(created, supabaseConfig).catch((err) =>
-        console.warn('Erro ao sincronizar venda no Supabase:', err)
+    if (getSupabaseClient(supabaseConfig)) {
+      persistCloud(
+        'venda',
+        (async () => {
+          await syncSaleToSupabase(created, supabaseConfig);
+          const newReceivable = updatedReceivables.find(
+            (item) => !data.accountsReceivable.some((existing) => existing.id === item.id)
+          );
+          if (newReceivable) {
+            await syncAccountReceivableToSupabase(newReceivable, supabaseConfig);
+          }
+          const touchedIds = new Set([
+            ...saleItems.map((item) => item.product_id).filter(Boolean),
+            ...consumedRecords.map((item) => item.product_id),
+          ]);
+          for (const product of updatedProducts) {
+            if (touchedIds.has(product.id)) {
+              await syncProductToSupabase(product, supabaseConfig);
+            }
+          }
+          for (const movement of newMovements) {
+            await syncInventoryMovementToSupabase(movement, supabaseConfig);
+          }
+        })()
       );
     }
 
@@ -1555,10 +1622,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setData((prev) => {
       const updated = prev.sales.map((s) => (s.id === id ? { ...s, ...updates } : s));
       const target = updated.find((s) => s.id === id);
-      if (target && supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-        syncSaleToSupabase(target, supabaseConfig).catch((err) =>
-          console.warn('Erro ao atualizar venda no Supabase:', err)
-        );
+      if (target && getSupabaseClient(supabaseConfig)) {
+        persistCloud('venda', syncSaleToSupabase(target, supabaseConfig));
       }
       return {
         ...prev,
@@ -1575,10 +1640,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       sales: prev.sales.filter((s) => s.id !== id),
     }));
 
-    if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-      deleteSaleFromSupabase(id, supabaseConfig).catch((err) =>
-        console.warn('Erro ao excluir venda no Supabase:', err)
-      );
+    if (getSupabaseClient(supabaseConfig)) {
+      persistCloud('venda', deleteSaleFromSupabase(id, supabaseConfig));
     }
 
     showToast('Venda removida com sucesso.', 'info');
@@ -1650,9 +1713,21 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       inventoryMovements: [...refundMovements, ...prev.inventoryMovements],
     }));
 
-    if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-      syncSaleToSupabase(updatedSale, supabaseConfig).catch((err) =>
-        console.warn('Erro ao estornar venda no Supabase:', err)
+    if (getSupabaseClient(supabaseConfig)) {
+      persistCloud(
+        'estorno de venda',
+        (async () => {
+          await syncSaleToSupabase(updatedSale, supabaseConfig);
+          const touched = new Set(refundMovements.map((m) => m.product_id));
+          for (const product of updatedProducts) {
+            if (touched.has(product.id)) {
+              await syncProductToSupabase(product, supabaseConfig);
+            }
+          }
+          for (const movement of refundMovements) {
+            await syncInventoryMovementToSupabase(movement, supabaseConfig);
+          }
+        })()
       );
     }
 
@@ -1701,9 +1776,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       accountsPayable: updatedPayables,
     }));
 
-    if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-      syncExpenseToSupabase(created, supabaseConfig).catch((err) =>
-        console.warn('Erro ao sincronizar despesa no Supabase:', err)
+    if (getSupabaseClient(supabaseConfig)) {
+      persistCloud(
+        'despesa',
+        (async () => {
+          await syncExpenseToSupabase(created, supabaseConfig);
+          const newPayable = updatedPayables.find(
+            (item) => !data.accountsPayable.some((existing) => existing.id === item.id)
+          );
+          if (newPayable) {
+            await syncAccountPayableToSupabase(newPayable, supabaseConfig);
+          }
+        })()
       );
     }
 
@@ -1716,10 +1800,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setData((prev) => {
       const updated = prev.expenses.map((e) => (e.id === id ? { ...e, ...updates } : e));
       const target = updated.find((e) => e.id === id);
-      if (target && supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-        syncExpenseToSupabase(target, supabaseConfig).catch((err) =>
-          console.warn('Erro ao atualizar despesa no Supabase:', err)
-        );
+      if (target && getSupabaseClient(supabaseConfig)) {
+        persistCloud('despesa', syncExpenseToSupabase(target, supabaseConfig));
       }
       return {
         ...prev,
@@ -1736,10 +1818,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       expenses: prev.expenses.filter((e) => e.id !== id),
     }));
 
-    if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-      deleteExpenseFromSupabase(id, supabaseConfig).catch((err) =>
-        console.warn('Erro ao excluir despesa no Supabase:', err)
-      );
+    if (getSupabaseClient(supabaseConfig)) {
+      persistCloud('despesa', deleteExpenseFromSupabase(id, supabaseConfig));
     }
 
     showToast('Despesa excluída com sucesso.', 'info');
@@ -1761,10 +1841,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       accountsPayable: [created, ...prev.accountsPayable],
     }));
 
-    if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-      syncAccountPayableToSupabase(created, supabaseConfig).catch((err) =>
-        console.warn('Erro ao sincronizar conta a pagar no Supabase:', err)
-      );
+    if (getSupabaseClient(supabaseConfig)) {
+      persistCloud('conta a pagar', syncAccountPayableToSupabase(created, supabaseConfig));
     }
 
     showToast(`Conta a pagar (${formatCurrency(created.amount)}) registrada!`, 'success');
@@ -1776,10 +1854,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setData((prev) => {
       const updated = prev.accountsPayable.map((p) => (p.id === id ? { ...p, ...updates } : p));
       const target = updated.find((p) => p.id === id);
-      if (target && supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-        syncAccountPayableToSupabase(target, supabaseConfig).catch((err) =>
-          console.warn('Erro ao atualizar conta a pagar no Supabase:', err)
-        );
+      if (target && getSupabaseClient(supabaseConfig)) {
+        persistCloud('conta a pagar', syncAccountPayableToSupabase(target, supabaseConfig));
       }
       return {
         ...prev,
@@ -1796,10 +1872,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       accountsPayable: prev.accountsPayable.filter((p) => p.id !== id),
     }));
 
-    if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-      deleteAccountPayableFromSupabase(id, supabaseConfig).catch((err) =>
-        console.warn('Erro ao excluir conta a pagar no Supabase:', err)
-      );
+    if (getSupabaseClient(supabaseConfig)) {
+      persistCloud('conta a pagar', deleteAccountPayableFromSupabase(id, supabaseConfig));
     }
 
     showToast('Conta a pagar removida com sucesso.', 'info');
@@ -1835,12 +1909,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       expenses: [expense, ...prev.expenses],
     }));
 
-    if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-      syncAccountPayableToSupabase(updatedPayable, supabaseConfig).catch((err) =>
-        console.warn('Erro ao atualizar baixa de conta a pagar no Supabase:', err)
-      );
-      syncExpenseToSupabase(expense, supabaseConfig).catch((err) =>
-        console.warn('Erro ao sincronizar despesa no Supabase:', err)
+    if (getSupabaseClient(supabaseConfig)) {
+      persistCloud(
+        'baixa de conta a pagar',
+        (async () => {
+          await syncAccountPayableToSupabase(updatedPayable, supabaseConfig);
+          await syncExpenseToSupabase(expense, supabaseConfig);
+        })()
       );
     }
 
@@ -1863,10 +1938,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       accountsReceivable: [created, ...prev.accountsReceivable],
     }));
 
-    if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-      syncAccountReceivableToSupabase(created, supabaseConfig).catch((err) =>
-        console.warn('Erro ao sincronizar conta a receber no Supabase:', err)
-      );
+    if (getSupabaseClient(supabaseConfig)) {
+      persistCloud('conta a receber', syncAccountReceivableToSupabase(created, supabaseConfig));
     }
 
     showToast(`Conta a receber (${formatCurrency(created.amount)}) registrada!`, 'success');
@@ -1878,10 +1951,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setData((prev) => {
       const updated = prev.accountsReceivable.map((r) => (r.id === id ? { ...r, ...updates } : r));
       const target = updated.find((r) => r.id === id);
-      if (target && supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-        syncAccountReceivableToSupabase(target, supabaseConfig).catch((err) =>
-          console.warn('Erro ao atualizar conta a receber no Supabase:', err)
-        );
+      if (target && getSupabaseClient(supabaseConfig)) {
+        persistCloud('conta a receber', syncAccountReceivableToSupabase(target, supabaseConfig));
       }
       return {
         ...prev,
@@ -1898,10 +1969,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       accountsReceivable: prev.accountsReceivable.filter((r) => r.id !== id),
     }));
 
-    if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-      deleteAccountReceivableFromSupabase(id, supabaseConfig).catch((err) =>
-        console.warn('Erro ao excluir conta a receber no Supabase:', err)
-      );
+    if (getSupabaseClient(supabaseConfig)) {
+      persistCloud('conta a receber', deleteAccountReceivableFromSupabase(id, supabaseConfig));
     }
 
     showToast('Conta a receber removida com sucesso.', 'info');
@@ -1924,10 +1993,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       ),
     }));
 
-    if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-      syncAccountReceivableToSupabase(updatedReceivable, supabaseConfig).catch((err) =>
-        console.warn('Erro ao atualizar recebimento no Supabase:', err)
-      );
+    if (getSupabaseClient(supabaseConfig)) {
+      persistCloud('recebimento', syncAccountReceivableToSupabase(updatedReceivable, supabaseConfig));
     }
 
     showToast(`Recebimento de ${formatCurrency(item.amount)} confirmado!`, 'success');
@@ -1959,13 +2026,16 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       products: [created, ...prev.products],
     }));
 
-    if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-      syncProductToSupabase(created, supabaseConfig).catch((err) =>
-        console.warn('Erro ao sincronizar produto no Supabase:', err)
+    if (getSupabaseClient(supabaseConfig)) {
+      persistCloud(
+        'produto',
+        syncProductToSupabase(created, supabaseConfig).then(() => {
+          showToast(`"${created.name}" gravado no banco.`, 'success');
+        })
       );
     }
 
-    showToast(`${created.type} "${created.name}" cadastrado com sucesso!`, 'success');
+    showToast(`${created.type} "${created.name}" cadastrado. Gravando no banco...`, 'info');
     return created;
   };
 
@@ -1974,10 +2044,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setData((prev) => {
       const updated = prev.products.map((p) => (p.id === id ? { ...p, ...updates } : p));
       const target = updated.find((p) => p.id === id);
-      if (target && supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-        syncProductToSupabase(target, supabaseConfig).catch((err) =>
-          console.warn('Erro ao atualizar produto no Supabase:', err)
-        );
+      if (target && getSupabaseClient(supabaseConfig)) {
+        persistCloud('produto', syncProductToSupabase(target, supabaseConfig));
       }
       return {
         ...prev,
@@ -1996,10 +2064,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       inventoryMovements: prev.inventoryMovements.filter((m) => m.product_id !== id),
     }));
 
-    if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-      deleteProductFromSupabase(id, supabaseConfig).catch((err) =>
-        console.warn('Erro ao excluir produto no Supabase:', err)
-      );
+    if (getSupabaseClient(supabaseConfig)) {
+      persistCloud('produto', deleteProductFromSupabase(id, supabaseConfig));
     }
 
     showToast(`"${pName}" excluído do catálogo com sucesso.`, 'info');
@@ -2093,12 +2159,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       inventoryMovements: [movement, ...prev.inventoryMovements],
     }));
 
-    if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-      syncInventoryMovementToSupabase(movement, supabaseConfig).catch((err) =>
-        console.warn('Erro ao sincronizar movimento de estoque no Supabase:', err)
-      );
-      syncProductToSupabase(updatedProduct, supabaseConfig).catch((err) =>
-        console.warn('Erro ao atualizar saldo de produto no Supabase:', err)
+    if (getSupabaseClient(supabaseConfig)) {
+      persistCloud(
+        'estoque',
+        (async () => {
+          await syncProductToSupabase(updatedProduct, supabaseConfig);
+          await syncInventoryMovementToSupabase(movement, supabaseConfig);
+        })()
       );
     }
 
@@ -2205,18 +2272,17 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       inventoryMovements: [movement, ...prev.inventoryMovements],
     }));
 
-    if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-      syncInventoryMovementToSupabase(movement, supabaseConfig).catch((err) =>
-        console.warn('Erro ao sincronizar movimento de compra no Supabase:', err)
+    if (getSupabaseClient(supabaseConfig)) {
+      persistCloud(
+        'compra de estoque',
+        (async () => {
+          await syncProductToSupabase(updatedProduct, supabaseConfig);
+          await syncInventoryMovementToSupabase(movement, supabaseConfig);
+          if (purchaseExpense) {
+            await syncExpenseToSupabase(purchaseExpense, supabaseConfig);
+          }
+        })()
       );
-      syncProductToSupabase(updatedProduct, supabaseConfig).catch((err) =>
-        console.warn('Erro ao atualizar produto no Supabase:', err)
-      );
-      if (purchaseExpense) {
-        syncExpenseToSupabase(purchaseExpense, supabaseConfig).catch((err) =>
-          console.warn('Erro ao sincronizar despesa de compra no Supabase:', err)
-        );
-      }
     }
 
     showToast(
@@ -2280,12 +2346,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       inventoryMovements: [movement, ...prev.inventoryMovements],
     }));
 
-    if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-      syncInventoryMovementToSupabase(movement, supabaseConfig).catch((err) =>
-        console.warn('Erro ao sincronizar ajuste de estoque no Supabase:', err)
-      );
-      syncProductToSupabase(updatedProduct, supabaseConfig).catch((err) =>
-        console.warn('Erro ao atualizar produto após ajuste no Supabase:', err)
+    if (getSupabaseClient(supabaseConfig)) {
+      persistCloud(
+        'ajuste de estoque',
+        (async () => {
+          await syncProductToSupabase(updatedProduct, supabaseConfig);
+          await syncInventoryMovementToSupabase(movement, supabaseConfig);
+        })()
       );
     }
 
@@ -2314,10 +2381,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       customers: [created, ...prev.customers],
     }));
 
-    if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-      syncCustomerToSupabase(created, supabaseConfig).catch((err) =>
-        console.warn('Erro ao sincronizar cliente no Supabase:', err)
-      );
+    if (getSupabaseClient(supabaseConfig)) {
+      persistCloud('cliente', syncCustomerToSupabase(created, supabaseConfig));
     }
 
     showToast(`Cliente "${created.name}" cadastrado com sucesso!`, 'success');
@@ -2329,10 +2394,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setData((prev) => {
       const updated = prev.customers.map((c) => (c.id === id ? { ...c, ...updates } : c));
       const target = updated.find((c) => c.id === id);
-      if (target && supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-        syncCustomerToSupabase(target, supabaseConfig).catch((err) =>
-          console.warn('Erro ao atualizar cliente no Supabase:', err)
-        );
+      if (target && getSupabaseClient(supabaseConfig)) {
+        persistCloud('cliente', syncCustomerToSupabase(target, supabaseConfig));
       }
       return {
         ...prev,
@@ -2350,10 +2413,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       customers: prev.customers.filter((c) => c.id !== id),
     }));
 
-    if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-      deleteCustomerFromSupabase(id, supabaseConfig).catch((err) =>
-        console.warn('Erro ao excluir cliente no Supabase:', err)
-      );
+    if (getSupabaseClient(supabaseConfig)) {
+      persistCloud('cliente', deleteCustomerFromSupabase(id, supabaseConfig));
     }
 
     showToast(`Cliente "${name}" excluído com sucesso.`, 'info');
@@ -2375,10 +2436,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       suppliers: [created, ...prev.suppliers],
     }));
 
-    if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-      syncSupplierToSupabase(created, supabaseConfig).catch((err) =>
-        console.warn('Erro ao sincronizar fornecedor no Supabase:', err)
-      );
+    if (getSupabaseClient(supabaseConfig)) {
+      persistCloud('fornecedor', syncSupplierToSupabase(created, supabaseConfig));
     }
 
     showToast(`Fornecedor "${created.name}" cadastrado com sucesso!`, 'success');
@@ -2390,10 +2449,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setData((prev) => {
       const updated = prev.suppliers.map((s) => (s.id === id ? { ...s, ...updates } : s));
       const target = updated.find((s) => s.id === id);
-      if (target && supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-        syncSupplierToSupabase(target, supabaseConfig).catch((err) =>
-          console.warn('Erro ao atualizar fornecedor no Supabase:', err)
-        );
+      if (target && getSupabaseClient(supabaseConfig)) {
+        persistCloud('fornecedor', syncSupplierToSupabase(target, supabaseConfig));
       }
       return {
         ...prev,
@@ -2411,10 +2468,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       suppliers: prev.suppliers.filter((s) => s.id !== id),
     }));
 
-    if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-      deleteSupplierFromSupabase(id, supabaseConfig).catch((err) =>
-        console.warn('Erro ao excluir fornecedor no Supabase:', err)
-      );
+    if (getSupabaseClient(supabaseConfig)) {
+      persistCloud('fornecedor', deleteSupplierFromSupabase(id, supabaseConfig));
     }
 
     showToast(`Fornecedor "${name}" excluído com sucesso.`, 'info');
@@ -2436,10 +2491,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       tasks: [created, ...prev.tasks],
     }));
 
-    if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-      syncTaskToSupabase(created, supabaseConfig).catch((err) =>
-        console.warn('Erro ao sincronizar tarefa no Supabase:', err)
-      );
+    if (getSupabaseClient(supabaseConfig)) {
+      persistCloud('tarefa', syncTaskToSupabase(created, supabaseConfig));
     }
 
     showToast(`Tarefa "${created.title}" criada com sucesso!`, 'success');
@@ -2451,10 +2504,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setData((prev) => {
       const updated = prev.tasks.map((t) => (t.id === id ? { ...t, ...updates } : t));
       const target = updated.find((t) => t.id === id);
-      if (target && supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-        syncTaskToSupabase(target, supabaseConfig).catch((err) =>
-          console.warn('Erro ao atualizar tarefa no Supabase:', err)
-        );
+      if (target && getSupabaseClient(supabaseConfig)) {
+        persistCloud('tarefa', syncTaskToSupabase(target, supabaseConfig));
       }
       return {
         ...prev,
@@ -2471,10 +2522,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       tasks: prev.tasks.filter((t) => t.id !== id),
     }));
 
-    if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-      deleteTaskFromSupabase(id, supabaseConfig).catch((err) =>
-        console.warn('Erro ao excluir tarefa no Supabase:', err)
-      );
+    if (getSupabaseClient(supabaseConfig)) {
+      persistCloud('tarefa', deleteTaskFromSupabase(id, supabaseConfig));
     }
 
     showToast('Tarefa removida com sucesso.', 'info');
@@ -2497,10 +2546,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       tasks: prev.tasks.map((t) => (t.id === id ? updatedTask : t)),
     }));
 
-    if (supabaseConfig.connected && supabaseConfig.url && supabaseConfig.anonKey) {
-      syncTaskToSupabase(updatedTask, supabaseConfig).catch((err) =>
-        console.warn('Erro ao sincronizar status de tarefa no Supabase:', err)
-      );
+    if (getSupabaseClient(supabaseConfig)) {
+      persistCloud('tarefa', syncTaskToSupabase(updatedTask, supabaseConfig));
     }
 
     showToast(`Tarefa marcada como ${nextStatus.toLowerCase()}!`, 'success');
